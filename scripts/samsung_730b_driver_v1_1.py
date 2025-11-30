@@ -340,6 +340,22 @@ class Samsung730B:
             return raw_path
 
 
+# ---------- s730b_test.c ----------
+
+def convert_raw_to_png(path, prefix="from_c", offset=182, width=112, height=96, rotate=True):
+    from PIL import Image
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) < offset + width * height:
+        print("data too short")
+        return
+    img = Image.frombytes("L", (width, height), data[offset:offset+width*height])
+    if rotate:
+        img = img.transpose(Image.ROTATE_90)
+    out = f"{prefix}.png"
+    img.save(out)
+    print("saved", out)
+
 # ---------- CLI ----------
 
 def parse_args():
