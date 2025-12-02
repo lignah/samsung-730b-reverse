@@ -59,7 +59,7 @@ class Samsung730B:
     IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT
 
     # 유효 지문 데이터 시작 오프셋 (offset 0부터 일일이 다 체크했음 -> 세로줄/가로줄 없음)
-    BEST_OFFSET = 182
+    BEST_OFFSET = 180
 
     CAPTURE_CHUNK_SIZE = 256
     CAPTURE_NUM_CHUNKS = 85
@@ -139,6 +139,10 @@ class Samsung730B:
             f"ctrl_write: req=0x{request:02x}, wValue=0x{value:04x}, "
             f"wIndex=0x{index:04x}, len={0 if data is None else len(data)}"
         )
+
+        # 12월 2일 디버그용): 0xCA일 때 콘솔에 찍기
+        if request == 0xCA:
+            print(f"[CTRL-0xCA] wIndex=0x{index:04x}")
 
         return self.dev.ctrl_transfer(
             bmRequestType, request, value, index,
@@ -264,25 +268,40 @@ class Samsung730B:
         self.state = SensorState.CAPTURING
         image_data = bytearray()
 
-        for i in range(self.CAPTURE_NUM_CHUNKS):
+        # ---------- 1) chunk 0 : 상태 응답만 처리 ----------
+        # wIndex = 0x032a (= CAPTURE_START_INDEX)
+        wIndex0 = self.CAPTURE_START_INDEX
+        self._log(f"chunk 0: wIndex=0x{wIndex0:04x}, 상태 응답용 control 0xCA 전송")
+        self._ctrl_write(0xCA, 0x0003, wIndex0 & 0xFFFF, None)
+
+        # 캡처 시작 명령 (a8 06 00 00 ...)
+        capture_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(
+            self.BULK_PACKET_SIZE - 4
+        )
+        self._log("capture_cmd (a8 06 00 00 ...) 전송")
+        self._bulk_out(capture_cmd)
+
+        # 첫 IN: 짧은 상태 응답만 읽고 버림 (보통 0~2 bytes 정도)
+        status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
+        if status is None:
+            self._log("초기 상태 응답 bulk IN 타임아웃 (chunk 0)")
+        else:
+            self._log(f"초기 상태 응답 수신: {len(status)} bytes")
+
+
+        # ---------- 2) chunk 1..N : 실제 이미지 데이터 ----------
+        for i in range(1, self.CAPTURE_NUM_CHUNKS):
             offset = i * self.CAPTURE_CHUNK_SIZE
             wIndex = self.CAPTURE_START_INDEX + offset
 
             # CONTROL 0xCA: 프레임 청크 설정
+            self._log(f"chunk {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
             self._ctrl_write(0xCA, 0x0003, wIndex & 0xFFFF, None)
 
-            # 첫 청크에서만 capture start 명령 전송
-            if i == 0:
-                capture_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(
-                    self.BULK_PACKET_SIZE - 4
-                )
-                self._log("capture_cmd (a8 06 00 00 ...) 전송")
-                self._bulk_out(capture_cmd)
-
-            # 데이터 읽기
-            data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
+            # 데이터 읽기 (256 bytes 기대)
+            data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=1000)
             if not data:
-                self._log(f"캡처 중 타임아웃, chunk={i}")
+                self._log(f"캡처 중 타임아웃 또는 0 bytes 수신, chunk={i}")
                 break
 
             image_data.extend(data)
