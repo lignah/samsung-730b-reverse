@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Samsung 730B 지문인식 드라이버 (v1.1)
+Samsung 730B 지문인식 드라이버 (v1.3)
 
-- 리눅스용, libfprint 포팅 전에 파이썬으로 구현한거임
+- 리눅스용, libfprint C로 구현전에 파이썬으로 구현한거임
 - 초기화/캡처 시퀀스는 Windows 트래픽 기반으로 재현했음
-- 손가락 감지는 아직 USB 레벨 프로토콜 미해결이라,
-  현재 버전은 '수동(엔터 입력)' 방식으로 처리함 (TODO)
 - 지문 레이아웃:
   - 캡처 데이터 전체 길이 21506 bytes
   - 유효 지문 영역: offset 182부터 112x96 (세로줄/가로줄 없는 오프셋과 해상도)
@@ -142,7 +140,7 @@ class Samsung730B:
 
         # 12월 2일 디버그용): 0xCA일 때 콘솔에 찍기
         if request == 0xCA:
-            print(f"[CTRL-0xCA] wIndex=0x{index:04x}")
+            self._log(f"[CTRL-0xCA] wIndex=0x{index:04x}")
 
         return self.dev.ctrl_transfer(
             bmRequestType, request, value, index,
@@ -236,27 +234,121 @@ class Samsung730B:
             self._log(f"init_cmd[{idx}]: {cmd.hex(' ')}")
             self._bulk_out(cmd)
 
-    # ---------- 손가락 감지 (25.11.30: 수동) ----------
+    # ---------- 손가락 감지 (25.12.05: 자동) ----------
 
-    def wait_finger_manual(self):
-        """
-        손가락 감지 - 지금은 윈도우 드라이버의 손가락 감지 방법을 몰라서 일단 수동 모드로만 동작함 (TODO)
-        """
+    def wait_finger(self, max_loop=5):
+        """finger detect"""
         if self.state == SensorState.DISCONNECTED:
             raise Samsung730BError("장치가 열려있지 않음")
 
+        print("[*] finger detect 시도중...")
         self.state = SensorState.AWAIT_FINGER
-        print("[*] 손가락을 센서에 올려놓고 엔터 ...")
-        try:
-            input()
-        except KeyboardInterrupt:
-            print("취소")
-            self.state = SensorState.IDLE
+
+        for r in range(max_loop):
+            print(f"[*] detect loop {r+1}/{max_loop}")
+
+            for i in range(max_loop + 1):
+                sensor = self.finger_detect(max_chunks=max_loop + 1)
+                finger = self._has_finger_in_detect(sensor)
+                self._log(f"loop {r+1}-{i}: finger={finger}\n")
+
+                if finger:
+                    print(f"[+] finger detected")
+                    self.state = SensorState.IDLE
+                    return True
+
+                time.sleep(0.4)
+
+            self._log("finger not detected, 센서 초기화 재시도")
+            try:
+                self.close()
+            except Exception:
+                pass
+
+            # time.sleep(0.5)s
+
+            try:
+                self.open()
+            except Exception as e:
+                print(f"[!] 센서 재초기화 실패: {e}")
+                self.state = SensorState.ERROR
+                return False
+
+        print("[-] finger detect timeout")
+        self.state = SensorState.IDLE
+        return False
+
+    def finger_detect(self, max_chunks=6):
+        """finger detect용 짧은캡처, 데이터 패턴으로 손가락 유무 추정"""
+        if self.state not in (SensorState.IDLE, SensorState.AWAIT_FINGER):
+            raise Samsung730BError(f"캡처 가능 상태가 아님: {self.state}")
+
+        self.state = SensorState.CAPTURING
+        image_data = bytearray()
+
+        # ---------- chunk 0 : 상태 응답 ----------
+        wIndex0 = self.CAPTURE_START_INDEX
+        self._log(f"detect_chunk 0: wIndex=0x{wIndex0:04x}, control 0xCA 전송")
+        self._ctrl_write(0xCA, 0x0003, wIndex0 & 0xFFFF, None)
+
+        capture_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(self.BULK_PACKET_SIZE - 4)
+        self._log("detect_cmd (a8 06 00 00 ...) 전송")
+        self._bulk_out(capture_cmd)
+
+        status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
+        if status is None:
+            self._log("detect: 초기 상태 응답 bulk IN 타임아웃 (chunk 0)")
+        else:
+            self._log(f"detect: 초기 상태 응답 수신: {len(status)} bytes")
+            image_data.extend(status)
+
+        # ---------- chunk 1..N : 일부만 읽기 ----------
+        for i in range(1, max_chunks):
+            offset = i * self.CAPTURE_CHUNK_SIZE
+            wIndex = self.CAPTURE_START_INDEX + offset
+
+            self._log(f"detect chunk {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
+            self._ctrl_write(0xCA, 0x0003, wIndex & 0xFFFF, None)
+
+            data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=700)
+            if not data:
+                self._log(f"detect중 타임아웃 또는 0bytes 수신, chunk={i}")
+                break
+
+            image_data.extend(data)
+
+            # ACK
+            self._bulk_out(bytes(self.BULK_PACKET_SIZE))
+
+        self.state = SensorState.IDLE
+        return bytes(image_data)
+
+    def _has_finger_in_detect(self, data: bytes) -> bool:
+        """ff 비율 기반"""
+        if not data or len(data) < 512:
+            self._log("detect: data too short for finger detect")
             return False
 
-        # 손가락 감지된 것으로 일단 진행
-        self.state = SensorState.IDLE
-        return True
+        sample = data[:min(len(data), 4096)]
+        total = len(sample)
+        zeros = sample.count(0x00)
+        ff = sample.count(0xFF)
+        uniq = len(set(sample))
+
+        self._log(
+            f"detect stats(ff-based): total={total}, zeros={zeros}, "
+            f"ff={ff}, uniq={uniq}"
+        )
+
+        # detect X: zeros 많고 ff비율 아주낮음
+        zero_ratio = zeros / total
+        ff_ratio = ff / total
+
+        # detect O: ff비율 80퍼 이상, zeros비율 1에 가깝지 않음
+        if ff_ratio > 0.3 and zeros < total * 0.95:
+            return True
+
+        return False
 
     # ---------- 캡처 ----------
 
@@ -288,7 +380,6 @@ class Samsung730B:
         else:
             self._log(f"초기 상태 응답 수신: {len(status)} bytes")
 
-
         # ---------- 2) chunk 1..N : 실제 이미지 데이터 ----------
         for i in range(1, self.CAPTURE_NUM_CHUNKS):
             offset = i * self.CAPTURE_CHUNK_SIZE
@@ -312,7 +403,7 @@ class Samsung730B:
         self.state = SensorState.IDLE
 
         if len(image_data) == 0:
-            raise CaptureError("캡처된 데이터가 비어 있음")
+            raise CaptureError("[-] 캡처된 데이터가 비어 있음")
 
         return bytes(image_data)
 
@@ -404,19 +495,38 @@ def main():
     print("=" * 50)
     print()
 
+    # 1) detect 전용 인스턴스
+    detector = Samsung730B(debug=args.debug)
+
+    try:
+        detector.open()
+        print("[+] 드라이버 초기화 완료\n")
+
+        # 1-2) finger detect
+        if not detector.wait_finger():
+            return 1
+
+    except Samsung730BError as e:
+        print(f"\n[드라이버 오류 - detect 단계] {e}")
+        return 1
+    except KeyboardInterrupt:
+        print("\n사용자 중단")
+        return 1
+    except Exception as e:
+        print(f"\n[예상치 못한 오류 - detect 단계] {e}")
+        return 1
+    finally:
+        detector.close()
+
+    # 2) capture 전용 인스턴스
     scanner = Samsung730B(debug=args.debug)
 
     try:
-        # 1) 장치 열기
+        # 2-1) 장치 새로 열기 + 초기화
         scanner.open()
-        print("[+] 장치 연결 및 초기화 완료\n")
+        print("[+] detect 이후 초기화 완료\n")
 
-        # 2) 손가락 올려놓기 (현재: 수동)
-        if not scanner.wait_finger_manual():
-            print("[-] 손가락 감지 실패 (사용자 취소)")
-            return 1
-
-        # 3) 캡처
+        # 2-2) full 캡처
         data = scanner.capture()
         non_zero = sum(1 for b in data if b != 0)
         print(f"[+] 캡처 완료: {len(data)} bytes, non-zero={non_zero}bytes\n")
@@ -425,7 +535,7 @@ def main():
             print("[-] 데이터 길이가 너무 짧아서 캡처 실패로 간주")
             return 1
 
-        # 4) 저장
+        # 2-3) 저장
         path = scanner.save_image(
             data,
             prefix=args.prefix,
@@ -435,17 +545,16 @@ def main():
         return 0
 
     except Samsung730BError as e:
-        print(f"\n[드라이버 오류] {e}")
+        print(f"\n[드라이버 오류 - capture 단계] {e}")
         return 1
     except KeyboardInterrupt:
         print("\n사용자 중단")
         return 1
     except Exception as e:
-        print(f"\n[예상치 못한 오류..] {e}")
+        print(f"\n[예상치 못한 오류 - capture 단계] {e}")
         return 1
     finally:
         scanner.close()
-
-
+        
 if __name__ == "__main__":
     raise SystemExit(main())
