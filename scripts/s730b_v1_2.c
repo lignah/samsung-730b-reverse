@@ -584,7 +584,7 @@ static int has_finger_in_detect(const unsigned char *data, int len) {
             ff++;
     }
     
-    // 25.12.07 잠깐멈춤
+    // 25.12.07 잠깐멈춤 
     printf("%d\n", total);
 
     double zero_ratio = (double)zeros / (double)total;
