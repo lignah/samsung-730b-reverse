@@ -337,6 +337,8 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
         // printf("[*] 초기 상태 응답: %d bytes\n", transferred);
     }
 
+// printf("total_len = %d, r = %d\12", total_len, r);
+
     // ---------- 2) 나머지 chunk: 실제 데이터 + ACK ----------
     for (size_t i = 1; i < CAPTURE_NUM_CHUNKS; i++) {
         uint16_t wIndex = capture_indices[i];
@@ -367,6 +369,8 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             &transferred,
             1000
         );
+
+// printf("total_len = %d, r = %d\12", total_len, r);
 
         if (r < 0) {
             fprintf(stderr, "[-] bulk IN 실패 chunk=%zu, err=%d\n", i, r);
@@ -442,6 +446,7 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             0,
             500
         );
+// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=0, err=%d\n", r);
             goto out_fail;
@@ -462,7 +467,9 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             &transferred,
             500
         );
+// printf("r = %d\12", r);
         if (r < 0) {
+// printf("r = %d\12", r);
             // fprintf(stderr, "[-] detect: 캡처 시작 bulk 전송 실패 chunk=0, err=%d\n", r);
             goto out_fail;
         }
@@ -476,6 +483,8 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             &transferred,
             500
         );
+//-----------------------------------------
+// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: 초기 상태 bulk IN 실패 chunk=0, err=%d\n", r);
             goto out_fail;
