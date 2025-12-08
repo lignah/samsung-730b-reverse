@@ -1,0 +1,2 @@
+# gcc -Wall -O2 730b_v1_3.c -o 730b -lusb-1.0
+730b

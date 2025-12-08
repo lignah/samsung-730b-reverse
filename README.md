@@ -1,4 +1,4 @@
-updated 25.12.07
+updated 25.12.09
 
 # samsung-730b-reverse
 
@@ -83,9 +83,9 @@ img = img.transpose(Image.ROTATE_90)
 - 아직 fprintd enroll UX는 조금 더 튜닝 필요 (일부 프레임에서 minutiae 부족 경고)
 
 
-## s730b_test.c (C/libusb 단독 테스트)
+## 730b_v1_3.c (C/libusb)
 
-C/libusb로 구현한 [`s730b_v1_2.c`](scripts/s730b_v1_2.c)
+C/libusb로 구현한 [`730b_v1_3.c`](scripts/730b_v1_3.c)
 
 빌드 예:
 
@@ -93,8 +93,8 @@ C/libusb로 구현한 [`s730b_v1_2.c`](scripts/s730b_v1_2.c)
 sudo pacman -S libusb
 ls /usr/include/libusb-1.0/libusb.h
 
-gcc -Wall -O2 s730b_v1_2.c -o s730b -lusb-1.0
-sudo ./s730b_test
+gcc -Wall -O2 730b_v1_3.c -o 730b -lusb-1.0
+sudo ./730b
 ```
 
 #### 잠시 학습시간
@@ -102,7 +102,7 @@ sudo ./s730b_test
 
 `-O2` = 최적화 lv2. 빠르고 크기줄여 컴파일 (릴리즈용)
 
-`gcc s730b_test.c -o s730b_test -lusb-1.0` 만 해도됨
+`gcc 730b_v1_3.c -o 730b -lusb-1.0` 만 해도됨
 
 
 ## 참고

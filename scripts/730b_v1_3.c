@@ -17,11 +17,12 @@
 
 libusb_device_handle* _libusb_initializing();
 static void init_sensor(libusb_device_handle*);
-static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int *out_len);
-static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks);
-static int has_finger_in_detect(const unsigned char *data, int len);
-static int wait_finger(libusb_device_handle *dev);
-static int save_pgm_from_raw(const unsigned char *raw, int raw_len, const char *fname, int rotate_90);
+static int capture_fingerprint(libusb_device_handle*, unsigned char**, int*);
+static int detect_finger(libusb_device_handle*, unsigned char**, int*, int);
+static int has_finger_in_detect(const unsigned char*, int);
+static int wait_finger(libusb_device_handle*);
+static int save_pgm_from_raw(const unsigned char*, int, const char*, int);
+static void die(const char*, int);
 
 static const uint16_t capture_indices[] = {
     0x032a, 0x042a, 0x052a, 0x062a,
@@ -49,13 +50,10 @@ static const uint16_t capture_indices[] = {
 };
 static const size_t CAPTURE_NUM_CHUNKS = sizeof(capture_indices) / sizeof(capture_indices[0]);
 
-static void die(const char *msg, int err) {
-    if (err < 0)
-        fprintf(stderr, "[-] %s (err=%d)\n", msg, err);
-    else
-        fprintf(stderr, "[-] %s\n", msg);
-    exit(1);
-}
+struct cmd_def {
+    const unsigned char *data;
+    size_t len;
+};
 
 static const unsigned char cmd00[] = {0x4f, 0x80            };
 static const unsigned char cmd01[] = {0xa9, 0x4f, 0x80      };
@@ -80,17 +78,17 @@ static const unsigned char cmd19[] = {0xa9, 0x52, 0x27, 0x00};
 static const unsigned char cmd20[] = {0xa9, 0x09, 0x00, 0x00};
 static const unsigned char cmd21[] = {0xa9, 0x5d, 0x4d, 0x00};
 static const unsigned char cmd22[] = {0xa9, 0x51, 0xa8, 0x25};
-static const unsigned char cmd23[] = {0xa9, 0x03, 0x00};
+static const unsigned char cmd23[] = {0xa9, 0x03, 0x00      };
 static const unsigned char cmd24[] = {0xa9, 0x38, 0x01, 0x00};
 static const unsigned char cmd25[] = {0xa9, 0x3d, 0xff, 0x0f};
 static const unsigned char cmd26[] = {0xa9, 0x10, 0x60, 0x00};
 static const unsigned char cmd27[] = {0xa9, 0x3b, 0x14, 0x00};
 static const unsigned char cmd28[] = {0xa9, 0x2f, 0xf6, 0xff};
 static const unsigned char cmd29[] = {0xa9, 0x09, 0x00, 0x00};
-static const unsigned char cmd30[] = {0xa9, 0x0c, 0x00};
+static const unsigned char cmd30[] = {0xa9, 0x0c, 0x00      };
 static const unsigned char cmd31[] = {0xa8, 0x20, 0x00, 0x00};
-static const unsigned char cmd32[] = {0xa9, 0x04, 0x00};
-static const unsigned char cmd33[] = {0xa8, 0x08, 0x00};
+static const unsigned char cmd32[] = {0xa9, 0x04, 0x00      };
+static const unsigned char cmd33[] = {0xa8, 0x08, 0x00      };
 static const unsigned char cmd34[] = {0xa9, 0x09, 0x00, 0x00};
 static const unsigned char cmd35[] = {0xa8, 0x3e, 0x00, 0x00};
 static const unsigned char cmd36[] = {0xa9, 0x03, 0x00, 0x00};
@@ -100,67 +98,39 @@ static const unsigned char cmd39[] = {0xa9, 0x2f, 0xef, 0x00};
 static const unsigned char cmd40[] = {0xa9, 0x09, 0x00, 0x00};
 static const unsigned char cmd41[] = {0xa9, 0x5d, 0x4d, 0x00};
 static const unsigned char cmd42[] = {0xa9, 0x51, 0x3a, 0x25};
-static const unsigned char cmd43[] = {0xa9, 0x0c, 0x00};
+static const unsigned char cmd43[] = {0xa9, 0x0c, 0x00      };
 static const unsigned char cmd44[] = {0xa8, 0x20, 0x00, 0x00};
 static const unsigned char cmd45[] = {0xa9, 0x04, 0x00, 0x00};
 static const unsigned char cmd46[] = {0xa9, 0x09, 0x00, 0x00};
 
-/* init용 명령 정의 */
-struct cmd_def {
-    const unsigned char *data;
-    size_t len;
-};
-
 static const struct cmd_def init_cmds[] = {
-    { cmd00,  sizeof(cmd00)  },
-    { cmd01,  sizeof(cmd01)  },
-    { cmd02,  sizeof(cmd02)  },
-    { cmd03,  sizeof(cmd03)  },
-    { cmd04,  sizeof(cmd04)  },
-    { cmd05,  sizeof(cmd05)  },
-    { cmd06,  sizeof(cmd06)  },
-    { cmd07,  sizeof(cmd07)  },
-    { cmd08,  sizeof(cmd08)  },
-    { cmd09,  sizeof(cmd09)  },
-    { cmd10, sizeof(cmd10) },
-    { cmd11, sizeof(cmd11) },
-    { cmd12, sizeof(cmd12) },
-    { cmd13, sizeof(cmd13) },
-    { cmd14, sizeof(cmd14) },
-    { cmd15, sizeof(cmd15) },
-    { cmd16, sizeof(cmd16) },
-    { cmd17, sizeof(cmd17) },
-    { cmd18, sizeof(cmd18) },
-    { cmd19, sizeof(cmd19) },
-    { cmd20, sizeof(cmd20) },
-    { cmd21, sizeof(cmd21) },
-    { cmd22, sizeof(cmd22) },
-    { cmd23, sizeof(cmd23) },
-    { cmd24, sizeof(cmd24) },
-    { cmd25, sizeof(cmd25) },
-    { cmd26, sizeof(cmd26) },
-    { cmd27, sizeof(cmd27) },
-    { cmd28, sizeof(cmd28) },
-    { cmd29, sizeof(cmd29) },
-    { cmd30, sizeof(cmd30) },
-    { cmd31, sizeof(cmd31) },
-    { cmd32, sizeof(cmd32) },
-    { cmd33, sizeof(cmd33) },
-    { cmd34, sizeof(cmd34) },
-    { cmd35, sizeof(cmd35) },
-    { cmd36, sizeof(cmd36) },
-    { cmd37, sizeof(cmd37) },
-    { cmd38, sizeof(cmd38) },
-    { cmd39, sizeof(cmd39) },
-    { cmd40, sizeof(cmd40) },
-    { cmd41, sizeof(cmd41) },
-    { cmd42, sizeof(cmd42) },
-    { cmd43, sizeof(cmd43) },
-    { cmd44, sizeof(cmd44) },
-    { cmd45, sizeof(cmd45) },
+    { cmd00, sizeof(cmd00) }, { cmd01, sizeof(cmd01) },
+    { cmd02, sizeof(cmd02) }, { cmd03, sizeof(cmd03) },
+    { cmd04, sizeof(cmd04) }, { cmd05, sizeof(cmd05) },
+    { cmd06, sizeof(cmd06) }, { cmd07, sizeof(cmd07) },
+    { cmd08, sizeof(cmd08) }, { cmd09, sizeof(cmd09) },
+    { cmd10, sizeof(cmd10) }, { cmd11, sizeof(cmd11) },
+    { cmd12, sizeof(cmd12) }, { cmd13, sizeof(cmd13) },
+    { cmd14, sizeof(cmd14) }, { cmd15, sizeof(cmd15) },
+    { cmd16, sizeof(cmd16) }, { cmd17, sizeof(cmd17) },
+    { cmd18, sizeof(cmd18) }, { cmd19, sizeof(cmd19) },
+    { cmd20, sizeof(cmd20) }, { cmd21, sizeof(cmd21) },
+    { cmd22, sizeof(cmd22) }, { cmd23, sizeof(cmd23) },
+    { cmd24, sizeof(cmd24) }, { cmd25, sizeof(cmd25) },
+    { cmd26, sizeof(cmd26) }, { cmd27, sizeof(cmd27) },
+    { cmd28, sizeof(cmd28) }, { cmd29, sizeof(cmd29) },
+    { cmd30, sizeof(cmd30) }, { cmd31, sizeof(cmd31) },
+    { cmd32, sizeof(cmd32) }, { cmd33, sizeof(cmd33) },
+    { cmd34, sizeof(cmd34) }, { cmd35, sizeof(cmd35) },
+    { cmd36, sizeof(cmd36) }, { cmd37, sizeof(cmd37) },
+    { cmd38, sizeof(cmd38) }, { cmd39, sizeof(cmd39) },
+    { cmd40, sizeof(cmd40) }, { cmd41, sizeof(cmd41) },
+    { cmd42, sizeof(cmd42) }, { cmd43, sizeof(cmd43) },
+    { cmd44, sizeof(cmd44) }, { cmd45, sizeof(cmd45) },
     { cmd46, sizeof(cmd46) },
 };
 static const size_t init_cmds_len = sizeof(init_cmds) / sizeof(init_cmds[0]);
+
 
 int main(int argc, char** argv) {
     printf("========================================\n  ");
@@ -179,11 +149,10 @@ int main(int argc, char** argv) {
         die("finger detect timeout", -1);
         return 1;
     }
-    init_sensor(dev);
-
+    
     unsigned char *buf = NULL;
     int len = 0;
-    int r = capture_frame(dev, &buf, &len);
+    int r = capture_fingerprint(dev, &buf, &len);
     if (r < 0 || !buf)
         die("캡처 실패", r);
 
@@ -285,7 +254,7 @@ libusb_device_handle* _libusb_initializing() {
     return dev;
 }
 
-static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int *out_len) {
+static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_buf, int *out_len) {
     int r;
     int transferred;
     int total_len = 0;
@@ -418,7 +387,7 @@ out_fail:
     return -1;
 }
 
-static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks) {
+static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks) {
     int r;
     int transferred;
     int total_len = 0;
@@ -603,10 +572,11 @@ static int wait_finger(libusb_device_handle *dev) {
             init_sensor(dev);
             unsigned char *buf = NULL;
             int len = 0;
-            int r = detect_probe(dev, &buf, &len, 6);
+            int r = detect_finger(dev, &buf, &len, 6);
             if (r == 0 && buf) {
                 int finger = has_finger_in_detect(buf, len);
                 free(buf);
+                init_sensor(dev);
                 if (finger) return 1;
             }
 
@@ -681,4 +651,12 @@ static int save_pgm_from_raw(const unsigned char *raw, int raw_len, const char *
     printf("[+] PGM 저장됨: %s (width=%d, height=%d, rotate_90=%d)\n",
            fname, w, h, rotate_90);
     return 0;
+}
+
+static void die(const char *msg, int err) {
+    if (err < 0)
+        fprintf(stderr, "[-] %s (err=%d)\n", msg, err);
+    else
+        fprintf(stderr, "[-] %s\n", msg);
+    exit(1);
 }
