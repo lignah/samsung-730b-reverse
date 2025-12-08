@@ -93,7 +93,7 @@ C/libusb로 구현한 [`s730b_v1_2.c`](scripts/s730b_v1_2.c)
 sudo pacman -S libusb
 ls /usr/include/libusb-1.0/libusb.h
 
-gcc -Wall -O2 s730b_test.c -o s730b_test -lusb-1.0
+gcc -Wall -O2 s730b_v1_2.c -o s730b -lusb-1.0
 sudo ./s730b_test
 ```
 
