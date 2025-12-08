@@ -122,16 +122,16 @@ struct cmd_def {
     size_t len;
 };
 
-static const unsigned char cmd0[]  = {0x4f, 0x80};
-static const unsigned char cmd1[]  = {0xa9, 0x4f, 0x80};
-static const unsigned char cmd2[]  = {0xa8, 0xb9, 0x00};
-static const unsigned char cmd3[]  = {0xa9, 0x60, 0x1b, 0x00};
-static const unsigned char cmd4[]  = {0xa9, 0x50, 0x21, 0x00};
-static const unsigned char cmd5[]  = {0xa9, 0x61, 0x00, 0x00};
-static const unsigned char cmd6[]  = {0xa9, 0x62, 0x00, 0x1a};
-static const unsigned char cmd7[]  = {0xa9, 0x63, 0x00, 0x1a};
-static const unsigned char cmd8[]  = {0xa9, 0x64, 0x04, 0x0a};
-static const unsigned char cmd9[]  = {0xa9, 0x66, 0x0f, 0x80};
+static const unsigned char cmd00[] = {0x4f, 0x80                    };
+static const unsigned char cmd01[] = {0xa9, 0x4f, 0x80          };
+static const unsigned char cmd02[] = {0xa8, 0xb9, 0x00          };
+static const unsigned char cmd03[] = {0xa9, 0x60, 0x1b, 0x00};
+static const unsigned char cmd04[] = {0xa9, 0x50, 0x21, 0x00};
+static const unsigned char cmd05[] = {0xa9, 0x61, 0x00, 0x00};
+static const unsigned char cmd06[] = {0xa9, 0x62, 0x00, 0x1a};
+static const unsigned char cmd07[] = {0xa9, 0x63, 0x00, 0x1a};
+static const unsigned char cmd08[] = {0xa9, 0x64, 0x04, 0x0a};
+static const unsigned char cmd09[] = {0xa9, 0x66, 0x0f, 0x80};
 static const unsigned char cmd10[] = {0xa9, 0x67, 0x1b, 0x00};
 static const unsigned char cmd11[] = {0xa9, 0x68, 0x00, 0x0f};
 static const unsigned char cmd12[] = {0xa9, 0x69, 0x00, 0x14};
@@ -171,16 +171,16 @@ static const unsigned char cmd45[] = {0xa9, 0x04, 0x00, 0x00};
 static const unsigned char cmd46[] = {0xa9, 0x09, 0x00, 0x00};
 
 static const struct cmd_def init_cmds[] = {
-    { cmd0,  sizeof(cmd0)  },
-    { cmd1,  sizeof(cmd1)  },
-    { cmd2,  sizeof(cmd2)  },
-    { cmd3,  sizeof(cmd3)  },
-    { cmd4,  sizeof(cmd4)  },
-    { cmd5,  sizeof(cmd5)  },
-    { cmd6,  sizeof(cmd6)  },
-    { cmd7,  sizeof(cmd7)  },
-    { cmd8,  sizeof(cmd8)  },
-    { cmd9,  sizeof(cmd9)  },
+    { cmd00,  sizeof(cmd00)  },
+    { cmd01,  sizeof(cmd01)  },
+    { cmd02,  sizeof(cmd02)  },
+    { cmd03,  sizeof(cmd03)  },
+    { cmd04,  sizeof(cmd04)  },
+    { cmd05,  sizeof(cmd05)  },
+    { cmd06,  sizeof(cmd06)  },
+    { cmd07,  sizeof(cmd07)  },
+    { cmd08,  sizeof(cmd08)  },
+    { cmd09,  sizeof(cmd09)  },
     { cmd10, sizeof(cmd10) },
     { cmd11, sizeof(cmd11) },
     { cmd12, sizeof(cmd12) },
@@ -516,6 +516,7 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             0,
             500
         );
+// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=%d, err=%d\n", i, r);
             break;
@@ -594,7 +595,7 @@ static int has_finger_in_detect(const unsigned char *data, int len) {
     }
     
     // 25.12.07 잠깐멈춤 
-    printf("%d\n", total);
+    // printf("%d\n", total);
 
     double zero_ratio = (double)zeros / (double)total;
     double ff_ratio = (double)ff / (double)total;
@@ -618,6 +619,7 @@ static int wait_finger(libusb_device_handle *dev) {
         // printf("[*] finger detect loop %d/%d...\n", loop + 1, max_loop);
 
         for (int i = 0; i < probes_per_loop; i++) {
+            init_sensor(dev);
             unsigned char *buf = NULL;
             int len = 0;
             int r = detect_probe(dev, &buf, &len, 6);
@@ -634,7 +636,7 @@ static int wait_finger(libusb_device_handle *dev) {
         }
 
         // printf("[*] loop wait_finger\n");
-        init_sensor(dev);
+        // init_sensor(dev);
     }
 
     printf("[-] finger detect timeout\n");
