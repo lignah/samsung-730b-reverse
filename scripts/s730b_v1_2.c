@@ -57,9 +57,9 @@ static void die(const char *msg, int err) {
     exit(1);
 }
 
-static const unsigned char cmd00[] = {0x4f, 0x80                    };
-static const unsigned char cmd01[] = {0xa9, 0x4f, 0x80          };
-static const unsigned char cmd02[] = {0xa8, 0xb9, 0x00          };
+static const unsigned char cmd00[] = {0x4f, 0x80                };
+static const unsigned char cmd01[] = {0xa9, 0x4f, 0x80      };
+static const unsigned char cmd02[] = {0xa8, 0xb9, 0x00      };
 static const unsigned char cmd03[] = {0xa9, 0x60, 0x1b, 0x00};
 static const unsigned char cmd04[] = {0xa9, 0x50, 0x21, 0x00};
 static const unsigned char cmd05[] = {0xa9, 0x61, 0x00, 0x00};
