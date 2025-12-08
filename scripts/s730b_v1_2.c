@@ -15,73 +15,14 @@
 #define IMG_WIDTH  112
 #define IMG_HEIGHT 96
 
-static int save_pgm_from_raw(const unsigned char *raw, int raw_len, const char *fname, int rotate_90) {
-    int needed = IMG_OFFSET + IMG_WIDTH * IMG_HEIGHT;
-    if (raw_len < needed) {
-        fprintf(stderr, "[-] RAW 길이가 너무 짧음 (len=%d, 필요=%d)\n", raw_len, needed);
-        return -1;
-    }
+libusb_device_handle* _libusb_initializing();
+static void init_sensor(libusb_device_handle*);
+static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int *out_len);
+static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks);
+static int has_finger_in_detect(const unsigned char *data, int len);
+static int wait_finger(libusb_device_handle *dev);
+static int save_pgm_from_raw(const unsigned char *raw, int raw_len, const char *fname, int rotate_90);
 
-    const unsigned char *src = raw + IMG_OFFSET;
-
-    int w = IMG_WIDTH;
-    int h = IMG_HEIGHT;
-
-    const unsigned char *img_data = NULL;
-    unsigned char *rotated = NULL;
-
-    if (!rotate_90) {
-        img_data = src;
-    } else {
-        rotated = malloc(w * h);
-        if (!rotated) {
-            fprintf(stderr, "[-] rotate용 메모리 malloc 실패함\n");
-            return -1;
-        }
-
-        // 왼쪽으로 90도 회전
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int src_idx = y * w + x;
-                int x2 = y;
-                int y2 = (w - 1 - x);
-                int dst_idx = y2 * h + x2;
-                rotated[dst_idx] = src[src_idx];
-            }
-        }
-
-        int tmp = w;
-        w = h;
-        h = tmp;
-        img_data = rotated;
-    }
-
-    FILE *f = fopen(fname, "wb");
-    if (!f) {
-        fprintf(stderr, "[-] %s 열기 실패\n", fname);
-        free(rotated);
-        return -1;
-    }
-
-    fprintf(f, "P5\n%d %d\n255\n", w, h);
-
-    size_t img_size = (size_t)(w * h);
-    if (fwrite(img_data, 1, img_size, f) != img_size) {
-        fprintf(stderr, "[-] PGM 데이터 쓰기 실패\n");
-        fclose(f);
-        free(rotated);
-        return -1;
-    }
-
-    fclose(f);
-    free(rotated);
-
-    printf("[+] PGM 저장됨: %s (width=%d, height=%d, rotate_90=%d)\n",
-           fname, w, h, rotate_90);
-    return 0;
-}
-
-/* 파이썬에서 찍은 0xCA wIndex 시퀀스 (n = 0..84) */
 static const uint16_t capture_indices[] = {
     0x032a, 0x042a, 0x052a, 0x062a,
     0x072a, 0x082a, 0x092a, 0x0a2a,
@@ -115,12 +56,6 @@ static void die(const char *msg, int err) {
         fprintf(stderr, "[-] %s\n", msg);
     exit(1);
 }
-
-/* init용 명령 정의 */
-struct cmd_def {
-    const unsigned char *data;
-    size_t len;
-};
 
 static const unsigned char cmd00[] = {0x4f, 0x80                    };
 static const unsigned char cmd01[] = {0xa9, 0x4f, 0x80          };
@@ -169,6 +104,12 @@ static const unsigned char cmd43[] = {0xa9, 0x0c, 0x00};
 static const unsigned char cmd44[] = {0xa8, 0x20, 0x00, 0x00};
 static const unsigned char cmd45[] = {0xa9, 0x04, 0x00, 0x00};
 static const unsigned char cmd46[] = {0xa9, 0x09, 0x00, 0x00};
+
+/* init용 명령 정의 */
+struct cmd_def {
+    const unsigned char *data;
+    size_t len;
+};
 
 static const struct cmd_def init_cmds[] = {
     { cmd00,  sizeof(cmd00)  },
@@ -221,6 +162,55 @@ static const struct cmd_def init_cmds[] = {
 };
 static const size_t init_cmds_len = sizeof(init_cmds) / sizeof(init_cmds[0]);
 
+int main(int argc, char** argv) {
+    printf("========================================\n  ");
+    printf("      samsung 730b libusb test            \n");
+    printf("========================================\n\n");
+    
+    printf("[*] 센서 초기화 중...\n");
+    libusb_device_handle* dev = _libusb_initializing();
+    printf("[+] 센서 초기화 완료\n");
+
+    printf("[*] 손가락을 센서위에 올려놓으세요...\n\12");
+    if (!wait_finger(dev)) {
+        libusb_release_interface(dev, 0);
+        libusb_close(dev);
+        libusb_exit(NULL);
+        die("finger detect timeout", -1);
+        return 1;
+    }
+    init_sensor(dev);
+
+    unsigned char *buf = NULL;
+    int len = 0;
+    int r = capture_frame(dev, &buf, &len);
+    if (r < 0 || !buf)
+        die("캡처 실패", r);
+
+    int non_zero = 0;
+    for (int i = 0; i < len; i++)
+        if (buf[i] != 0) non_zero++;
+    printf("[+] 지문캡처 완료: %d bytes, non-zero=%d bytes\n", len, non_zero);
+
+    const char *fname = "capture.raw";
+    FILE *f = fopen(fname, "wb");
+    if (!f)
+        die("capture.raw 열기 실패", -1);
+    fwrite(buf, 1, len, f);
+    fclose(f);
+    printf("[+] RAW 저장됨: %s\n", fname);
+    save_pgm_from_raw(buf, len, "capture.pgm", 1);
+
+    free(buf);
+
+    libusb_release_interface(dev, 0);
+    libusb_close(dev);
+    libusb_exit(NULL);
+
+    printf("[+] 프로그램 종료\n\12");
+    return 0;
+}
+
 static void init_sensor(libusb_device_handle *dev) {
     int r;
 
@@ -267,7 +257,34 @@ static void init_sensor(libusb_device_handle *dev) {
     }
 }
 
-/* full frame 캡처: 기존 코드 그대로 */
+libusb_device_handle* _libusb_initializing() {
+    libusb_device_handle* dev = NULL;
+    int r = libusb_init(NULL);
+    if (r < 0)
+        die("libusb_init 실패", r);
+
+    dev = libusb_open_device_with_vid_pid(NULL, SAMSUNG730B_VID, SAMSUNG730B_PID);
+    if (!dev)
+        die("장치를 찾을 수 없음 (VID/PID or sudo..?)", -1);
+
+    if (libusb_kernel_driver_active(dev, 0) == 1) {
+        r = libusb_detach_kernel_driver(dev, 0);
+        if (r < 0)
+            die("커널 드라이버 분리 실패", r);
+    }
+
+    r = libusb_set_configuration(dev, 1);
+    if (r < 0)
+        die("set_configuration 실패", r);
+
+    r = libusb_claim_interface(dev, 0);
+    if (r < 0)
+        die("claim_interface 실패", r);
+
+    init_sensor(dev);
+    return dev;
+}
+
 static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int *out_len) {
     int r;
     int transferred;
@@ -278,7 +295,7 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
     if (!buf)
         die("malloc 실패", -1);
 
-    // ---------- 1) 첫 chunk: 상태 응답만 처리 (데이터 누적 X) ----------
+    // ---------- 1) 첫 chunk: 상태응답 ----------
     {
         uint16_t wIndex0 = capture_indices[0];
 
@@ -298,7 +315,7 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             goto out_fail;
         }
 
-        // 캡처 시작 명령 (a8 06 00 00 ...)
+        // 캡처 시작명령 (a8 06 00 00 ...)
         unsigned char start_cmd[256];
         memset(start_cmd, 0, sizeof(start_cmd));
         start_cmd[0] = 0xa8;
@@ -314,13 +331,12 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             &transferred,
             500
         );
-
         if (r < 0) {
             fprintf(stderr, "[-] 캡처 시작 bulk 전송 실패 (chunk=0, err=%d)\n", r);
             goto out_fail;
         }
 
-        // 첫 IN: 짧은 상태 응답만 읽고 버림 (0~2 bytes)
+        // 첫 bulk IN: 짧은 상태응답 읽기만함 (2 bytes)
         unsigned char tmp0[256];
         r = libusb_bulk_transfer(
             dev,
@@ -334,32 +350,19 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             fprintf(stderr, "[-] 초기 상태 bulk IN 실패 chunk=0, err=%d\n", r);
             goto out_fail;
         }
-        // printf("[*] 초기 상태 응답: %d bytes\n", transferred);
     }
-
-// printf("total_len = %d, r = %d\12", total_len, r);
 
     // ---------- 2) 나머지 chunk: 실제 데이터 + ACK ----------
     for (size_t i = 1; i < CAPTURE_NUM_CHUNKS; i++) {
         uint16_t wIndex = capture_indices[i];
 
         // CONTROL 0xCA: 청크 설정
-        r = libusb_control_transfer(
-            dev,
-            0x40,
-            0xCA,
-            0x0003,
-            wIndex,
-            NULL,
-            0,
-            500
-        );
+        r = libusb_control_transfer(dev, 0x40, 0xCA, 0x0003, wIndex, NULL, 0, 500);
         if (r < 0) {
             fprintf(stderr, "[-] control 0xCA 실패 chunk=%zu, err=%d\n", i, r);
             break;
         }
 
-        // 데이터 IN (256 bytes 기대)
         unsigned char tmp[256];
         r = libusb_bulk_transfer(
             dev,
@@ -370,15 +373,12 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             1000
         );
 
-// printf("total_len = %d, r = %d\12", total_len, r);
-
         if (r < 0) {
             fprintf(stderr, "[-] bulk IN 실패 chunk=%zu, err=%d\n", i, r);
             break;
         }
-
         if (transferred == 0) {
-            fprintf(stderr, "[*] chunk=%zu 에서 0 bytes 들어옴, 종료함\n", i);
+            fprintf(stderr, "[*] chunk=%zu 에서 0 bytes 들어옴, 종료\n", i);
             break;
         }
 
@@ -401,7 +401,6 @@ static int capture_frame(libusb_device_handle *dev, unsigned char **out_buf, int
             &transferred,
             500
         );
-
         if (r < 0) {
             fprintf(stderr, "[-] bulk ACK 실패 chunk=%zu, err=%d\n", i, r);
             break;
@@ -419,9 +418,6 @@ out_fail:
     return -1;
 }
 
-/* ---- 여기부터 finger detect 추가 ---- */
-
-/* detect용 짧은 캡처: 에러 나면 -1, 성공이면 0 */
 static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks) {
     int r;
     int transferred;
@@ -432,7 +428,7 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
     if (!buf)
         die("detect malloc fail", -1);
 
-    // chunk 0: 상태 응답만 (capture_frame과 동일 패턴)
+    // chunk 0: 상태 응답만
     {
         uint16_t wIndex0 = capture_indices[0];
 
@@ -446,7 +442,6 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             0,
             500
         );
-// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=0, err=%d\n", r);
             goto out_fail;
@@ -467,10 +462,7 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             &transferred,
             500
         );
-// printf("r = %d\12", r);
         if (r < 0) {
-// printf("r = %d\12", r);
-            // fprintf(stderr, "[-] detect: 캡처 시작 bulk 전송 실패 chunk=0, err=%d\n", r);
             goto out_fail;
         }
 
@@ -483,8 +475,6 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             &transferred,
             500
         );
-//-----------------------------------------
-// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: 초기 상태 bulk IN 실패 chunk=0, err=%d\n", r);
             goto out_fail;
@@ -502,7 +492,7 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
         }
     }
 
-    // chunk 1..max_chunks-1: 일부 데이터만 읽고 ACK
+    // chunk 1: 일부 데이터만 읽고 ACK
     for (int i = 1; i < max_chunks; i++) {
         uint16_t wIndex = capture_indices[i];
 
@@ -516,7 +506,6 @@ static int detect_probe(libusb_device_handle *dev, unsigned char **out_buf, int 
             0,
             500
         );
-// printf("r = %d\12", r);
         if (r < 0) {
             fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=%d, err=%d\n", i, r);
             break;
@@ -575,7 +564,6 @@ out_fail:
     return -1;
 }
 
-/* python _has_finger_in_detect 기반 heuristic */
 static int has_finger_in_detect(const unsigned char *data, int len) {
     if (!data || len < 512) {
         fprintf(stderr, "[detect] data too short for finger detect (len=%d)\n", len);
@@ -593,9 +581,6 @@ static int has_finger_in_detect(const unsigned char *data, int len) {
         else if (v == 0xFF)
             ff++;
     }
-    
-    // 25.12.07 잠깐멈춤 
-    // printf("%d\n", total);
 
     double zero_ratio = (double)zeros / (double)total;
     double ff_ratio = (double)ff / (double)total;
@@ -606,19 +591,15 @@ static int has_finger_in_detect(const unsigned char *data, int len) {
                 total, zeros, zero_ratio, ff, ff_ratio);
         return 1;
     }
-
     return 0;
 }
 
-/* python wait_finger 비슷한 루프 (단, C에선 open/close 재사용 안 함) */
 static int wait_finger(libusb_device_handle *dev) {
     const int max_loop = 10;
-    const int probes_per_loop = 10;
+    const int detect_per_loop = 10;
 
     for (int loop = 0; loop < max_loop; loop++) {
-        // printf("[*] finger detect loop %d/%d...\n", loop + 1, max_loop);
-
-        for (int i = 0; i < probes_per_loop; i++) {
+        for (int i = 0; i < detect_per_loop; i++) {
             init_sensor(dev);
             unsigned char *buf = NULL;
             int len = 0;
@@ -626,93 +607,78 @@ static int wait_finger(libusb_device_handle *dev) {
             if (r == 0 && buf) {
                 int finger = has_finger_in_detect(buf, len);
                 free(buf);
-
-                if (finger) 
-                    return 1;
+                if (finger) return 1;
             }
 
-            struct timespec ts = {0, 100 * 1000 * 1000}; // 100ms
+            struct timespec ts = { 0, 100 * 1000 * 1000 }; // 100ms
             nanosleep(&ts, NULL);
         }
-
-        // printf("[*] loop wait_finger\n");
-        // init_sensor(dev);
     }
-
-    printf("[-] finger detect timeout\n");
     return 0;
 }
 
-int main(int argc, char** argv) {
-    int r;
-    libusb_device_handle *dev = NULL;
-
-    printf("========================================\n");
-    printf("       samsung 730b libusb test\n");
-    printf("========================================\n\n");
-    
-    printf("[*] 센서 초기화 중...\n");
-    r = libusb_init(NULL);
-    if (r < 0)
-        die("libusb_init 실패", r);
-
-    dev = libusb_open_device_with_vid_pid(NULL, SAMSUNG730B_VID, SAMSUNG730B_PID);
-    if (!dev)
-        die("장치를 찾을 수 없음 (VID/PID or sudo..?)", -1);
-
-    if (libusb_kernel_driver_active(dev, 0) == 1) {
-        r = libusb_detach_kernel_driver(dev, 0);
-        if (r < 0)
-            die("커널 드라이버 분리 실패", r);
+static int save_pgm_from_raw(const unsigned char *raw, int raw_len, const char *fname, int rotate_90) {
+    int needed = IMG_OFFSET + IMG_WIDTH * IMG_HEIGHT;
+    if (raw_len < needed) {
+        fprintf(stderr, "[-] RAW 길이가 너무 짧음 (len=%d, 필요=%d)\n", raw_len, needed);
+        return -1;
     }
 
-    r = libusb_set_configuration(dev, 1);
-    if (r < 0)
-        die("set_configuration 실패", r);
+    const unsigned char *src = raw + IMG_OFFSET;
 
-    r = libusb_claim_interface(dev, 0);
-    if (r < 0)
-        die("claim_interface 실패", r);
+    int w = IMG_WIDTH;
+    int h = IMG_HEIGHT;
 
-    init_sensor(dev);
-    printf("[+] 센서 초기화 완료\n");
+    const unsigned char *img_data = NULL;
+    unsigned char *rotated = NULL;
 
-    printf("[*] 손가락을 센서위에 올려놓으세요...\n\12");
-    if (!wait_finger(dev)) {
-        libusb_release_interface(dev, 0);
-        libusb_close(dev);
-        libusb_exit(NULL);
-        return 1;
+    if (!rotate_90) {
+        img_data = src;
+    } else {
+        rotated = malloc(w * h);
+        if (!rotated) {
+            fprintf(stderr, "[-] rotate용 메모리 malloc 실패\n");
+            return -1;
+        }
+
+        // 왼쪽으로 90도 회전
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int src_idx = y * w + x;
+                int x2 = y;
+                int y2 = (w - 1 - x);
+                int dst_idx = y2 * h + x2;
+                rotated[dst_idx] = src[src_idx];
+            }
+        }
+
+        int tmp = w;
+        w = h;
+        h = tmp;
+        img_data = rotated;
     }
-    init_sensor(dev);
 
-    unsigned char *buf = NULL;
-    int len = 0;
-    r = capture_frame(dev, &buf, &len);
-    if (r < 0 || !buf)
-        die("캡처 실패", r);
-
-    int non_zero = 0;
-    for (int i = 0; i < len; i++)
-        if (buf[i] != 0) non_zero++;
-
-    printf("[+] 지문캡처 완료: %d bytes, non-zero=%d bytes\n", len, non_zero);
-
-    const char *fname = "capture.raw";
     FILE *f = fopen(fname, "wb");
-    if (!f)
-        die("capture.raw 열기 실패", -1);
-    fwrite(buf, 1, len, f);
+    if (!f) {
+        fprintf(stderr, "[-] %s 열기 실패\n", fname);
+        free(rotated);
+        return -1;
+    }
+
+    fprintf(f, "P5\n%d %d\n255\n", w, h);
+
+    size_t img_size = (size_t)(w * h);
+    if (fwrite(img_data, 1, img_size, f) != img_size) {
+        fprintf(stderr, "[-] PGM 데이터 쓰기 실패\n");
+        fclose(f);
+        free(rotated);
+        return -1;
+    }
+
     fclose(f);
-    printf("[+] RAW 저장됨: %s\n", fname);
-    save_pgm_from_raw(buf, len, "capture.pgm", 1);
+    free(rotated);
 
-    free(buf);
-
-    libusb_release_interface(dev, 0);
-    libusb_close(dev);
-    libusb_exit(NULL);
-
-    printf("[+] 프로그램 종료\n\12");
+    printf("[+] PGM 저장됨: %s (width=%d, height=%d, rotate_90=%d)\n",
+           fname, w, h, rotate_90);
     return 0;
 }
