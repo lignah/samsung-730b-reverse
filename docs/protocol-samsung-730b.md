@@ -1,19 +1,20 @@
-최종 업데이트 날짜: 25.12.07
+최종 업데이트 날짜: 25.12.12
 
-# Samsung 730B 지문 센서 비공식 프로토콜 정리
+# Samsung 730B 지문 센서 Vendor 프로토콜 정리
 
-> Samsung 730B (VID 0x04E8, PID 0x730B)에 대해 Windows 드라이버 트래픽과  
-> 리눅스 리버스 엔지니어링 결과를 정리한 문서임  
-> 파이썬 테스트 드라이버(v1.3)와 libfprint 드라이버 초안에서 검증한  
-> 이미지 레이아웃/오프셋/손가락 감지 로직까지 반영했음  
+Samsung 730B 지문 센서(VID 0x04E8, PID 0x730B)에 대한 USB 프로토콜 문서
 
----
+    Windows USBPcap + Wireshark로 캡처한 드라이버 트래픽
+    리눅스 usbmon + libusb/pyusb 기반 리버스 엔지니어링
+    파이썬 드라이버 (samsung_730b.py)
+    C/libusb 드라이버 (samsung_730b.c)
+    libfprint 드라이버 (samsung730b.c)
 
 ## 0. 전체 구조 요약
 
 리눅스 표준 지문 스택(libfprint/fprintd/PAM) 계층 구조 :
 
-```text
+```
 [센서 하드웨어 (Samsung 730B)]
         ↑ USB (bulk + control, vendor-specific)
 [로우레벨 드라이버 (파이썬 / libusb C)]
@@ -25,65 +26,68 @@
 [users]
 ```
 
-이 문서는 제일 아래층인 “USB 프로토콜 + 이미지 레이아웃 + finger detect”를 정리한 문서임  
+## 1. 장치 / USB 기본 정보
 
----
+- Vendor ID: 0x04E8 (Samsung)
+- Product ID: 0x730B
+- 인터페이스: Interface 0, Alternate Setting 0
+    - Endpoints:
+        - Bulk OUT: 0x01
+        - Bulk IN : 0x82
+    - Control transfer:
+        - bmRequestType = 0x40 (Host → Device, Vendor, Device)
+    - bRequest:
+        - 0xC3: init
+        - 0xCA: capture index / packet
 
-## 1. 장치/USB 기본 정보
-
-- Vendor ID: `0x04E8` (Samsung)
-- Product ID: `0x730B`
-- 인터페이스:
-  - Interface 0, Alternate Setting 0 사용
-  - Endpoints:
-    - Bulk OUT: `0x01`
-    - Bulk IN : `0x82`
-- Control transfer:
-  - `bmRequestType = 0x40` (Host → Device, Vendor, Device)
-  - 사용 bRequest:
-    - `0xC3` : init 관련 설정
-    - `0xCA` : 캡처 청크 인덱스 설정
-    - 일부 실험 중인 다른 값들(`0xCC` 등)은 아직 확정 아님
-
----
+참고: 이 값들은 파이썬 드라이버, C/libusb 드라이버, libfprint samsung730b 드라이버에서 모두 동일하게 사용중임
 
 ## 2. 초기 USB 시퀀스 (OS 레벨)
 
-Windows에서 730b.pcapng 기준, 장치 사용 직전에:
+Windows(USBPcap 캡처)에서 vendor‑specific 프로토콜이 시작되기 전에, OS가 수행하는 일반적인 USB 열거 과정
 
-```text
-GET DESCRIPTOR (DEVICE, CONFIGURATION)
-SET CONFIGURATION
 ```
+GET_DESCRIPTOR (DEVICE, CONFIGURATION)
+SET_CONFIGURATION
+...
+```
+등 표준 USB 시퀀스가 있음.
 
-등 표준 USB 시퀀스가 있음.  
-libusb/pyusb에서 `set_configuration()` 호출 시 동일 역할 수행함.  
-센서 프로토콜 관점에선 의미 없음.
+libusb/pyusb에서 `set_configuration()` 호출 시 동일 역할 수행함
 
----
+센서 프로토콜 관점에선 의미 없음
 
-## 3. 센서 초기화 (Initialization)
+## 3. 센서 초기화
 
-### 3.1. Control 초기화 (0xC3)
+### 3.1 Control 초기화 (0xC3)
 
 파이썬/ C 드라이버에서 공통으로 사용하는 초기 control 명령:
 
-```python
+```py
 ctrl_data = bytes([
-    0x80, 0x84, 0x1e, 0x00,
-    0x08, 0x00, 0x00, 0x01,
-    0x01, 0x01, 0x00, 0x00,
-    0x01, 0x00, 0x00, 0x00
+	0x80, 0x84, 0x1e, 0x00,
+	0x08, 0x00, 0x00, 0x01,
+	0x01, 0x01, 0x00, 0x00,
+	0x01, 0x00, 0x00, 0x00
 ])
-dev.ctrl_transfer(0x40, 0xC3, 0x0000, 0x0000, ctrl_data)
+self._ctrl_write(0xC3, 0x0000, 0x0000, ctrl_data)
 ```
 
-특징:
+libfprint 드라이버 대응 코드:
 
-- Windows pcap에서도 비슷한 control OUT이 보임
-- 의미는 정확히 알 수 없지만 “센서 기본 모드/전원/클럭 설정” 정도로 추정함
+```c
+guint8 c3_data[16] = {
+  0x80, 0x84, 0x1e, 0x00, 0x08, 0x00, 0x00, 0x01,
+  0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00
+};
 
-### 3.2. Bulk OUT 기반 레지스터 시퀀스 (0xA9 / 0xA8)
+usb_ctrl_out (usb_dev, 0xC3, 0x0000, 0x0000, c3_data, sizeof (c3_data),
+              500, error);
+```
+
+- 레지스터 의미나 비트필드는 불명확하나, 동작상 "기본 모드/전원/클럭 설정" 정도로 추정함
+
+### 3.2 0xA9 / 0xA8 레지스터 시퀀스 (bulk OUT)
 
 Windows 730b.pcapng에서 공통적으로 등장하는 패턴:
 
@@ -91,16 +95,12 @@ Windows 730b.pcapng에서 공통적으로 등장하는 패턴:
 - 마지막 4바이트가 항상 `0xA9` 또는 `0xA8`로 시작
 - Wireshark에서 `Leftover Capture Data`로 표시되는 부분이 실제 센서 명령
 
-예시:
+패킷 예시:
 
-```text
-URB_BULK out, length 31
-...
-Leftover Capture Data: a9 60 1b 00
-
-URB_BULK out, length 31
-...
-Leftover Capture Data: a9 50 21 00
+```
+URB_BULK out, length 31 ... Leftover Capture Data: a9 60 1b 00
+URB_BULK out, length 31 ... Leftover Capture Data: a9 50 21 00
+URB_BULK out, length 31 ... Leftover Capture Data: a9 61 00 00
 ```
 
 파이썬/ C 드라이버에서는 이 4바이트만 떼서 그대로 Bulk OUT으로 전송함:
@@ -119,188 +119,166 @@ init_cmds = [
 for cmd in init_cmds:
     ep_out.write(cmd)
 ```
+- libfprint 드라이버의 init_cmds[]도 동일한 리스트를 사용
+- 각 명령은 gain, timing, 노이즈 관련 레지스터 설정일듯?
 
-libfprint 드라이버에서도 같은 시퀀스 사용 중임.
+## 4. 캡처 프로토콜
 
-각 명령의 정확한 의미는 아직 미확정이고,  
-주로 gain/노이즈/타이밍 관련 레지스터로 추정됨.
+### 4.1 Windows 트레이스 기준 개요
 
----
+USBPcap 캡처 기준 이미지 캡처 시퀀스 :
 
-## 4. 이미지 캡처
+    Vendor control 요청 (0xCA, 가끔 0xCC)
+    a8 06 00 00 (capture start) + zero padding이 포함된 큰 Bulk OUT
+    그 뒤 반복되는 Bulk IN/OUT (이미지 데이터 블록으로 추정)
 
-### 4.1. 캡처 루프 개요
+센서 입장에서 중요한 패턴:
 
-파이썬 드라이버 v1.3 기준:
+    Index가 0x0100씩 증가하는 Control OUT
+    캡처 시작 시점에 한 번 Bulk OUT a8 06 00 00 ...
+    각 청크마다 Bulk IN 256 bytes (이미지 데이터)
+    그 뒤 Bulk OUT 256 bytes of zeros (ACK)
 
-- `CAPTURE_NUM_CHUNKS = 85`
-- `BULK_PACKET_SIZE = 256`
-- `CAPTURE_START_INDEX = 0x032A`
-
-캡처 알고리즘(단순화):
+## 4.2 파이썬 드라이버 캡처 [`samsung_730b.py`](../scripts/samsung_730b.py)
 
 ```python
-for i in range(CAPTURE_NUM_CHUNKS):
-    offset = i * BULK_PACKET_SIZE
-    wIndex = CAPTURE_START_INDEX + offset
+CAPTURE_PACKET_SIZE = 256
+CAPTURE_NUM_PACKETS = 85
+CAPTURE_START_INDEX = 0x032A
 
-    # 1) control 0xCA: 이번 청크의 인덱스 설정
-    dev.ctrl_transfer(0x40, 0xCA, 0x0003, wIndex & 0xFFFF, None)
+def capture(self):
+	...
+	# ---------- 1) packet 0 : 상태 응답만 처리 ----------
+	# wIndex = 0x032a (= CAPTURE_START_INDEX)
+	wIndex0 = self.CAPTURE_START_INDEX
+	self._ctrl_write(0xCA, 0x0003, wIndex0 & 0xFFFF, None)
 
-    # 2) 첫 청크일 때만 캡처 시작 커맨드 전송
-    if i == 0:
-        start_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(252)
-        ep_out.write(start_cmd)
+	# 캡처 시작 명령 (a8 06 00 00 ...)
+	capture_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(
+		self.BULK_PACKET_SIZE - 4
+	)
+	self._bulk_out(capture_cmd)
 
-    # 3) 이미지 데이터 bulk IN
-    data = ep_in.read(256, timeout=1000)
-    image_data.extend(data)
+	# 상태 응답(2byte)만 읽고 버림
+	status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
 
-    # 4) ACK (0으로 채운 256바이트)
-    ep_out.write(bytes(256))
+	# ---------- 2) packet 1..N : 실제 이미지 데이터 ----------
+	for i in range(1, self.CAPTURE_NUM_PACKETS):
+		offset = i * self.CAPTURE_PACKET_SIZE
+		wIndex = self.CAPTURE_START_INDEX + offset
+
+		# CONTROL 0xCA: 프레임 패킷 설정
+		self._ctrl_write(0xCA, 0x0003, wIndex & 0xFFFF, None)
+
+		# 데이터 읽기 (256 bytes 기대)
+		data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=1000)
+		if not data:
+			break
+
+		image_data.extend(data)
+	...
 ```
 
-libfprint 드라이버 쪽 `s730b_capture_frame()`도 거의 동일 구조로 구현되어 있음.
+## 4.3 캡처 버퍼 레이아웃과 유효 이미지 영역
 
-### 4.2. 캡처 데이터 길이 / 레이아웃
+여러 Offset 및 해상도 실험 결과 :
 
-실험 결과:
-
-- 캡처 전체 버퍼 길이 ≈ 21kB (환경에 따라 약간 변동)
-- 이 데이터를 1바이트 단위로 슬라이딩하면서 여러 해상도 테스트한 결과:
-
-  - **112 x 96**에서만 지문처럼 자연스러운 무늬가 나왔음
-  - 그 외 조합(56x96, 80x96 등)은 부자연스러움
-
-- 특정 offset에서 세로줄/위쪽 노이즈가 사라지는 지점을 찾아서 최종 확정:
-
-  - 유효 지문 시작 offset: **180 bytes**
-  - 해상도: **112 x 96**
+    전체 캡처 버퍼: 약 21,500 bytes
+    유효 해상도: 112 x 96 (width x height), 8-bit grayscale
+    Offset 최적값: 180 bytes (이 값을 써야 중앙 수직선이나 윗줄 노이즈같은게 없음)
 
 정리:
 
-- raw 캡처 버퍼: `buf[0..N)`
-- 유효 지문 영역: `buf[180 .. 180 + 112*96)`
+    유효 지문 시작: buffer[180]
+    크기: 112 * 96 = 10752 bytes
 
-파이썬 코드(v1.3):
+    libfprint 드라이버도 동일한 상수를 사용중
 
-```python
-IMG_OFFSET = 180
-IMG_W = 112
-IMG_H = 96
+## 4.4 방향 (Orientation)
 
-img = Image.frombytes(
-    "L",
-    (IMG_W, IMG_H),
-    buf[IMG_OFFSET : IMG_OFFSET + IMG_W * IMG_H],
-)
+    - 센서 내부 좌표계의 "위쪽"이 이미지 버퍼상의 "오른쪽"에 매핑되어 있음
+    - 사람 눈에 직관적으로 보이기 위해 파이썬 드라이버는 왼쪽으로 90도 회전(CCW)
+
+    참고: 현재 libfprint 드라이버는 회전 없이 raw 레이아웃(112x96)을 그대로 FpImage로 넘기고 있음. 매칭 품질을 보며 회전 적용 여부를 검토해야 함
+
+## 5. C/libusb 드라이버 [`samsung_730b.c`](../scripts/samsung_730b.c)
+
+파이썬 드라이버를 libusb/C로 옮긴 드라이버
+
+### 5.1 Chunk 0 동작 수정 (중요)
+
+초기 C 버전은 모든 256바이트 Packet이 동일하다고 가정하여 Chunk 0에도 ACK를 보냈으나, 이는 타임아웃 오류(-7)를 유발했었고, 파이썬 로그와 usbmon 트레이스 비교 결과 정상 동작 찾아냄
+
+- Packet 0 (Index 0x032A) :
+
+        Control 0xCA, wIndex=0x032A, wValue=0x0003
+        Bulk OUT 256 bytes (a8 06 00 00 + 0 padding)
+        Bulk IN 256 요청 → 실제로는 0~2 bytes 정도만 들어옴 (상태 응답)
+        중요: 이 응답은 버리고, ACK (Bulk OUT)를 보내지 않음.
+
+- Packet 1..84 :
+
+        Control 0xCA, wIndex = 0x032A + n * 0x0100
+        Bulk IN 256 bytes (이미지 데이터)
+        Bulk OUT 256 bytes of zeros (ACK)
+
+이 패턴 수정 후 정상적인 지문 이미지를 획득함
+
+### 5.2 Finger-detect
+
+Finger detect를 위해 전체 85 청크 대신 DETECT_PACKETS (예: 6) 만큼만 캡처하는 경로를 따로 둠
+
+    Packet 0 + 일부 Packet만 읽음
+    데이터 버퍼의 0x00 / 0xFF 분포를 분석하는 Heuristic 사용
+
+Heuristic 알고리즘 :
+
+```py
+# detect X: zeros 많고 ff비율 아주낮음
+zero_ratio = zeros / total
+ff_ratio = ff / total
+
+# detect O: ff비율 80퍼 이상, zeros비율 1에 가깝지 않음
+if ff_ratio > 0.3 and zeros < total * 0.95:
+	return True
 ```
 
-libfprint 드라이버도:
+## 6. libfprint 드라이버 [`samsung730b.c`](https://gitlab.freedesktop.org/lignah/libfprint/-/blob/feature/samsung730b/libfprint/drivers/samsung730b.c?ref_type=heads)
+
+### 6.1 libfprint (s730b_detect_finger)
+
+Capture와 동일한 Control/Bulk 패턴을 사용하되, DETECT_PACKETS 만큼만 읽어서 Probe 버퍼로 사용했음
 
 ```c
-#define IMG_OFFSET 180
-#define IMG_W      112
-#define IMG_H      96
-
-FpImage *img = fp_image_new(IMG_W, IMG_H);
-gsize img_size = 0;
-guchar *dst = (guchar *) fp_image_get_data (img, &img_size);
-
-memcpy(dst, raw + IMG_OFFSET, IMG_W * IMG_H);
-```
-
-이렇게 동일하게 사용 중임.
-
-### 4.3. 이미지 방향 (orientation)
-
-센서 실제 방향 기준으로:
-
-- 센서 상단에 “빈 공간”이 있고, 그쪽으로 손가락이 빠져나가는 구조임
-- raw 이미지를 보면 이 빈 영역이 이미지 오른쪽에 나타남
-
-그래서:
-
-- 파이썬/GUI에서 보기 좋게 하려면 **왼쪽으로 90도 회전**하는 게 자연스러움
-
-예:
-
-```python
-img = Image.frombytes("L", (IMG_W, IMG_H),
-                      buf[IMG_OFFSET : IMG_OFFSET + IMG_W * IMG_H])
-img = img.transpose(Image.ROTATE_90)
-```
-
-libfprint 쪽은 내부 매칭을 위해 굳이 회전 안 해도 되지만,  
-향후 다른 드라이버들과 방향을 맞출지 검토 필요함.
-
----
-
-## 5. finger detect 프로토콜 / heuristic
-
-### 5.1. 프로브 캡처 (detect_probe)
-
-finger detect 용으로 단축 캡처를 따로 둠:
-
-- `DETECT_PROBE_CHUNKS = 6`
-- 첫 청크는 캡처 시작 + 상태 읽기
-- 나머지 5 청크에 대해 약간 줄인 IN/OUT 시퀀스를 사용
-
-C 코드 개요(libfprint):
-
-```c
-guint8 *buf = g_malloc0(capacity);
-
-usb_ctrl_out(..., CAPTURE_CTRL_REQ, CAPTURE_CTRL_VAL,
-             CAPTURE_START_IDX, ...);
-
-start_cmd[0] = 0xa8;
-start_cmd[1] = 0x06;
-usb_bulk_out(..., SAMSUNG730B_EP_OUT, start_cmd, sizeof(start_cmd), ...);
-
-/* 첫 응답 읽기 */
-usb_bulk_in(..., buf + total, BULK_PACKET_SIZE, DETECT_INIT_TIMEOUT_MS, &got);
-
-/* 이후 1..DETECT_PROBE_CHUNKS-1 */
-for (i = 1; i < DETECT_PROBE_CHUNKS; i++) {
-    guint16 widx = CAPTURE_START_IDX + i * BULK_PACKET_SIZE;
-    usb_ctrl_out(..., CAPTURE_CTRL_REQ, CAPTURE_CTRL_VAL, widx, ...);
-    usb_bulk_in(...);       /* data 1개 */
-    usb_bulk_out(...);      /* zero ACK */
+static guint8
+*s730b_detect_finger (GUsbDevice *usb_dev, gsize *out_len, GError **error)
+{
+  /* packet 0 처리 (생략) */
+  ...
+  /* packets 1..N: 데이터 수신 루프 */
+  for (i = 1; i < DETECT_PACKETS; i++) {
+      guint16 widx = CAPTURE_START_IDX + i * BULK_PACKET_SIZE;
+      usb_ctrl_out (..., widx, ...);
+      usb_bulk_in (...);
+      usb_bulk_out (... zeros ACK ...);
+  }
+  ...
 }
 ```
-
-파이썬에서도 비슷한 구조로 구현 가능함.
-
-### 5.2. heuristic: 0xFF / 0x00 비율
-
-단축 캡처 데이터를 바탕으로 간단한 finger detect heuristic을 사용함:
+### 6.2 libfprint Heuristic (s730b_has_fingerprint)
 
 ```c
 static gboolean
-s730b_has_finger (const guint8 *data, gsize len)
+s730b_has_fingerprint (const guint8 *data, gsize len)
 {
-  if (!data || len < 512)
-    return FALSE;
+  if (!data || len < 512) return FALSE;
 
-  gsize total = MIN (len, (gsize) 4096);
-  gsize zeros = 0, ff = 0;
-
-  for (gsize i = 0; i < total; i++)
-    {
-      guint8 v = data[i];
-      if (v == 0x00)
-        zeros++;
-      else if (v == 0xFF)
-        ff++;
-    }
+  /* 0x00과 0xFF의 개수 카운트 */
+  // ...
 
   double ff_ratio = (double) ff / (double) total;
 
-  /* 경험적으로 맞춘 값:
-   * - ff_ratio > 0.3
-   * - zeros가 전체의 95% 미만
-   */
+  /* 30% 이상이 0xFF이고, 전체가 0으로 가득 차 있지 않으면 지문감지 */
   if (ff_ratio > 0.30 && zeros < total * 0.95)
     return TRUE;
 
@@ -308,202 +286,60 @@ s730b_has_finger (const guint8 *data, gsize len)
 }
 ```
 
-프로브 한 번 결과로 finger present 여부를 판정함.
+### 6.3 libfprint 대기 (s730b_wait_finger / s730b_wait_finger_lost)
 
-### 5.3. detect 루프 (wait_finger)
+    - s730b_wait_finger: "Init → Detect Finger → Heuristic" 루프를 반복 
+    - 성공 시 로그를 출력하고 Full Capture 전에 센서를 다시 Init(리셋)
+    - s730b_wait_finger_lost: Heuristic이 "손가락 없음"을 리포트할 때까지 대기 (Enroll/Verify 사이 처리용)
 
-최종 detect 루프는 여러 라운드 + 여러 프로브로 구성됨:
+## 7. libfprint 드라이버의 Capture
 
-```c
-#define DETECT_MAX_ROUNDS        5
-#define DETECT_PROBES_PER_ROUND  5
-#define DETECT_INTERVAL_MS       400
+C/libusb 드라이버의 로직 그대로 사용
 
-static gboolean
-s730b_wait_finger (GUsbDevice *usb_dev)
-{
-  for (guint r = 0; r < DETECT_MAX_ROUNDS; r++)
-    {
-      g_message ("s730b: detect round %u/%u", r + 1, DETECT_MAX_ROUNDS);
+    capture_indices[] : 파이썬/Windows 로그에서 관찰한 0x032a부터 시작하여 0x0100씩 증가하는 시퀀스를 그대로 사용
 
-      for (guint i = 0; i < DETECT_PROBES_PER_ROUND; i++)
-        {
-          gsize probe_len = 0;
-          GError *local_error = NULL;
-          guint8 *probe = s730b_detect_probe (usb_dev, &probe_len, &local_error);
+    전체 데이터 길이: 약 21.5 KB
 
-          if (!probe)
-            {
-              if (local_error)
-                {
-                  g_message ("s730b: detect probe error (round=%u, probe=%u): %s",
-                             r, i, local_error->message);
-                  g_clear_error (&local_error);
-                }
-              g_usleep ((gulong) DETECT_INTERVAL_MS * 1000);
-              continue;
-            }
-
-          gboolean finger = s730b_has_finger (probe, probe_len);
-          g_free (probe);
-
-          g_message ("s730b: probe %u: finger=%d", i, finger);
-          if (finger)
-            return TRUE;
-
-          g_usleep ((gulong) DETECT_INTERVAL_MS * 1000);
-        }
-
-      g_message ("s730b: re-init after failed detect round");
-      /* init 재실행 (에러는 soft-fail로 취급) */
-      ...
-    }
-
-  g_message ("s730b: finger detect timeout (no finger)");
-  return FALSE;
-}
-```
-
-특징:
-
-- USB 에러/타임아웃은 상위로 에러를 올리지 않고 log만 남김
-- detect 실패 시 `FALSE`만 반환해서 libfprint/fprintd 쪽에서  
-  “이번 activate에는 손가락이 없었다” 정도로 처리하게 함
-
----
-
-## 6. libfprint C 드라이버 설계/구현 상태
-
-### 6.1. ID 테이블
-
-```c
-#define SAMSUNG730B_VID 0x04e8
-#define SAMSUNG730B_PID 0x730b
-
-static const FpIdEntry samsung730b_ids[] = {
-  { .vid = SAMSUNG730B_VID, .pid = SAMSUNG730B_PID, .driver_data = 0 },
-  { .vid = 0,               .pid = 0,               .driver_data = 0 },
-};
-```
-
-### 6.2. 디바이스 클래스 설정
-
-```c
-dev_class->id = "samsung730b";
-dev_class->full_name = "Samsung 730B (experimental)";
-dev_class->id_table = samsung730b_ids;
-dev_class->type = FP_DEVICE_TYPE_USB;
-dev_class->scan_type = FP_SCAN_TYPE_PRESS;
-
-img_class->img_open = samsung730b_dev_init;
-img_class->img_close = samsung730b_dev_deinit;
-img_class->activate = samsung730b_dev_activate;
-img_class->deactivate = samsung730b_dev_deactivate;
-
-img_class->img_width = IMG_W;
-img_class->img_height = IMG_H;
-img_class->bz3_threshold = 20;
-```
-
-### 6.3. activate() 흐름
+## 8. libfprint로 이미지 넘기기
 
 ```c
 static void
-samsung730b_dev_activate (FpImageDevice *dev)
+s730b_submit_image (FpImageDevice *dev, guint8 *raw, gsize raw_len)
 {
-  GUsbDevice *usb = fpi_device_get_usb_device (FP_DEVICE (dev));
-  GError *error = NULL;
-  guint8 *raw = NULL;
-  gsize raw_len = 0;
+  // ... (길이 검증) ...
 
-  /* 1) finger detect */
-  if (!s730b_wait_finger (usb))
-    {
-      fpi_image_device_report_finger_status (dev, FALSE);
-      fpi_image_device_activate_complete (dev, NULL);
-      return;
-    }
+  FpImage *img = fp_image_new (IMG_W, IMG_H);
+  gsize img_size = 0;
+  guchar *dst = (guchar *) fp_image_get_data (img, &img_size);
 
-  /* 2) detect 후 init 재실행 */
-  if (!s730b_run_init (usb, &error))
-    {
-      fpi_image_device_activate_complete (dev, error);
-      return;
-    }
+  memcpy (dst, raw + IMG_OFFSET, IMG_W * IMG_H);
+  g_free (raw);
 
-  /* 3) full frame capture */
-  if (!s730b_capture_frame (usb, &raw, &raw_len, &error))
-    {
-      fpi_image_device_activate_complete (dev, error);
-      return;
-    }
-
-  fpi_image_device_activate_complete (dev, NULL);
-  s730b_emit_image (dev, raw, raw_len);
+  fpi_image_device_report_finger_status (dev, TRUE);
+  fpi_image_device_image_captured (dev, img);
 }
 ```
 
-` s730b_emit_image()`에서:
+현재 상태:
 
-- `raw_len` 길이 검사
-- `IMG_OFFSET` 이후 `IMG_W * IMG_H` 만큼 잘라서 `FpImage`에 복사
-- `fpi_image_device_report_finger_status(dev, TRUE);`
-- `fpi_image_device_image_captured(dev, img);`
+    Offset 180부터 112x96 바이트를 그대로 복사 (회전안함)
 
-까지 호출함.
+테스트 결과: 
 
----
+    fprintd-enroll은 5/5 완료, fprintd-verify는 score 0/20
 
-## 7. 에러 / 타임아웃 / 향후 과제
+# 9. 요약 및 향후 계획
 
-### 7.1. 현재까지 확인한 이슈
+확정된 내용
 
-- 일부 캡처 프레임에서 libfprint가  
-  `Failed to detect minutiae: No minutiae found` 경고를 남김
-- fprintd enroll UX가 아직 완전히 매끄럽지 않음:
-  - 처음 몇 프레임에서 minutiae 부족 → enroll 단계가 안 진행되거나
-  - fprintd 쪽 세그폴트(로컬 빌드/환경 이슈일 가능성)도 간헐적으로 확인
+    장치: Samsung 730B (VID 0x04E8, PID 0x730B)
+    프로토콜: Control (0xC3/0xCA) 및 Bulk (0xA9/0xA8 Init, 데이터 청크 루프)
+    캡처: Chunk 0 특수 처리 + 84 데이터 청크
+    이미지: Offset 180, 112x96, 8bpp Grayscale (보기용 90도 회전 필요?)
+    감지: 짧은 캡처(6 청크) + 0xFF/0x00 비율 Heuristic
+    - libfprint 드라이버(samsung730b) 작성 완료
+    - Enroll 동작 확인
 
-### 7.2. 향후 작업 아이디어
+다음으로 할 일 :
 
-- 이미지 품질 개선:
-  - init 시퀀스 0xA9/0xA8 값 약간씩 바꿔가며 SNR/대비 비교
-  - 오프셋/윈도우 약간 조정해서 잡음 줄이기
-- libfprint 통합 튜닝:
-  - 다른 이미지 드라이버들이 어떻게 activate/deactivate/finger-off를 다루는지 비교
-  - 삼성 730B 드라이버도 동일 패턴으로 맞추기
-- Windows pcap 비교:
-  - 손가락 없음/실패 시나리오 pcap 추가로 캡처
-  - Windows 드라이버가 타임아웃/에러 후 어떤 리셋 시퀀스를 쓰는지 확인
-
----
-
-## 8. 요약 (현재까지 확정된 포인트)
-
-1. **장치 정보**
-   - VID/PID: 0x04E8 / 0x730B
-   - Bulk OUT/IN: 0x01 / 0x82
-   - Control OUT: 0x40, bRequest=0xC3/0xCA 등
-
-2. **초기화**
-   - Control 0xC3 + 0xA9/0xA8 bulk OUT 시퀀스
-   - Windows pcap의 `Leftover Capture Data`와 파이썬/libfprint 코드 1:1 매칭
-
-3. **이미지 캡처**
-   - 256B x 85 청크, control 0xCA + bulk IN/OUT
-   - 유효 지문 영역:
-     - offset: **180 bytes**
-     - size: **112 x 96**, 8bpp
-   - 필요 시 보기용으로 90도 회전
-
-4. **finger detect**
-   - 단축 캡처(6 청크) + ff/zero 비율 heuristic
-   - 여러 프로브/라운드 + 재init 루프
-
-5. **libfprint 드라이버**
-   - `Samsung 730B (experimental)` 이미지 디바이스로 동작
-   - detect/capture/minutiae까지 통과 확인
-   - fprintd enroll UX/이미지 품질 관련 튜닝은 앞으로 더 해야 함
-
-이 문서는 파이썬/ C 테스트 코드와 libfprint 드라이버 작업을 위한  
-레퍼런스로 계속 업데이트할 예정임
+    [ ] fprintd-verify score 0/20 원인 분석/해결

@@ -1,4 +1,4 @@
-updated 25.12.11
+updated 25.12.12
 
 # samsung-730b-reverse
 
@@ -14,7 +14,9 @@ updated 25.12.11
   - 파이썬/libusb 테스트 드라이버 작성
   - libfprint 공식 드라이버로 기여하는 것이 최종 목표
 
-## 파이썬 드라이버 (v1.3 기준)
+## 파이썬 드라이버
+
+Python/pyusb로 구현한 [`samsung_730b.py`](scripts/samsung_730b.py)
 
 ### 의존성
 
@@ -22,10 +24,10 @@ updated 25.12.11
 pip install pyusb pillow
 ```
 
-### 사용법 (드라이버 v1.3)
+### 사용법
 
 ```bash
-sudo python scripts/samsung_730b_driver_v1_3.py --debug
+sudo python scripts/samsung_730b.py --debug
 ```
 
 기능:
@@ -56,10 +58,34 @@ img = Image.frombytes(
 img = img.transpose(Image.ROTATE_90)
 ```
 
+## C/libusb 드라이버
+
+C/libusb로 구현한 [`samsung_730b.c`](scripts/samsung_730b.c)
+
+빌드 예:
+
+```bash
+sudo pacman -S libusb
+ls /usr/include/libusb-1.0/libusb.h
+
+gcc -Wall -O2 samsung_730b.c -o samsung_730b -lusb-1.0
+sudo ./samsung_730b
+```
+
+#### 잠시 학습시간
+
+`-Wall` = 경고 많이 켜는 옵션 (버그잡기용)
+
+`-O2` = 최적화 lv2. 빠르고 크기줄여 컴파일 (릴리즈용)
+
+`gcc samsung_730b.c -o samsung_730b -lusb-1.0` 만 해도됨
+
+
 ## libfprint 드라이버 작업 상태 (요약)
 
 별도 레포/브랜치에서 작업 중:
 
+- [`samsung730b.c`](https://gitlab.freedesktop.org/lignah/libfprint/-/blob/feature/samsung730b/libfprint/drivers/samsung730b.c?ref_type=heads)
 - libfprint 브랜치: `feature/samsung730b`
 - MR: https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/556
 
@@ -69,10 +95,10 @@ img = img.transpose(Image.ROTATE_90)
 - init 시퀀스:
   - control 0xC3 + Windows와 동일한 0xA9/0xA8 bulk OUT 시퀀스
 - 이미지 캡처:
-  - control 0xCA + 256B bulk IN/OUT, 85 청크
+  - control 0xCA + 256B bulk IN/OUT, 85 패킷
   - 파이썬 드라이버와 동일한 offset/해상도로 `FpImage` 구성
 - finger detect:
-  - 짧은 probe 캡처(6 청크) + ff 비율 기반 heuristic
+  - 짧은 캡처(6 패킷) + ff 비율 기반 heuristic
   - 여러 round/재초기화 루프
 
 상태:
@@ -80,33 +106,13 @@ img = img.transpose(Image.ROTATE_90)
 - fprintd에서 장치가 `Samsung 730B (experimental)`로 잘 잡힘
 - 손 올리면:
   - detect → capture → minutiae 추출까지 동작 확인됨
-- 아직 fprintd enroll UX는 조금 더 튜닝 필요 (일부 프레임에서 minutiae 부족 경고)
-
-
-## 730b_v1_3.c (C/libusb)
-
-C/libusb로 구현한 [`730b_v1_3.c`](scripts/730b_v1_3.c)
-
-빌드 예:
-
-```bash
-sudo pacman -S libusb
-ls /usr/include/libusb-1.0/libusb.h
-
-gcc -Wall -O2 730b_v1_3.c -o 730b -lusb-1.0
-sudo ./730b
-```
-
-#### 잠시 학습시간
-`-Wall` = 경고 많이 켜는 옵션 (버그잡기용)
-
-`-O2` = 최적화 lv2. 빠르고 크기줄여 컴파일 (릴리즈용)
-
-`gcc 730b_v1_3.c -o 730b -lusb-1.0` 만 해도됨
+- fprintd-enroll 지문인식, 등록 확인
+- fprintd-verify score 0/20 문제 해결중
 
 
 ## 참고
 
 - 상세 프로토콜/드라이버 설계/pcap 분석/이미지 오프셋 찾은 과정 등:
   - [`protocol-samsung-730b.md`](./docs/protocol-samsung-730b.md) 참고하면 됨
+  - Please refer to the English document [`English-protocol-samsung-730b.md`](./docs/English-protocol-samsung-730b.md)
 - libfprint 드라이버는 freedesktop upstream 리뷰를 받으면서 계속 업데이트할 예정

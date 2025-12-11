@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Samsung 730B 지문인식 드라이버 (v1.3)
+Samsung 730B 지문인식 드라이버
 
 - 리눅스용, libfprint C로 구현전에 파이썬으로 구현한거임
 - 초기화/캡처 시퀀스는 Windows 트래픽 기반으로 재현했음
@@ -59,8 +59,8 @@ class Samsung730B:
     # 유효 지문 데이터 시작 오프셋 (offset 0부터 일일이 다 체크했음 -> 세로줄/가로줄 없음)
     BEST_OFFSET = 180
 
-    CAPTURE_CHUNK_SIZE = 256
-    CAPTURE_NUM_CHUNKS = 85
+    CAPTURE_PACKET_SIZE = 256
+    CAPTURE_NUM_PACKETS = 85
     CAPTURE_START_INDEX = 0x032A
 
     def __init__(self, debug=False):
@@ -248,8 +248,8 @@ class Samsung730B:
             print(f"[*] detect loop {r+1}/{max_loop}")
 
             for i in range(max_loop + 1):
-                sensor = self.finger_detect(max_chunks=max_loop + 1)
-                finger = self._has_finger_in_detect(sensor)
+                sensor = self.finger_detect(max_packets=max_loop + 1)
+                finger = self._has_fingerprint_in_detect(sensor)
                 self._log(f"loop {r+1}-{i}: finger={finger}\n")
 
                 if finger:
@@ -278,7 +278,7 @@ class Samsung730B:
         self.state = SensorState.IDLE
         return False
 
-    def finger_detect(self, max_chunks=6):
+    def finger_detect(self, max_packets=6):
         """finger detect용 짧은캡처, 데이터 패턴으로 손가락 유무 추정"""
         if self.state not in (SensorState.IDLE, SensorState.AWAIT_FINGER):
             raise Samsung730BError(f"캡처 가능 상태가 아님: {self.state}")
@@ -286,9 +286,9 @@ class Samsung730B:
         self.state = SensorState.CAPTURING
         image_data = bytearray()
 
-        # ---------- chunk 0 : 상태 응답 ----------
+        # ---------- packet 0 : 상태 응답 ----------
         wIndex0 = self.CAPTURE_START_INDEX
-        self._log(f"detect_chunk 0: wIndex=0x{wIndex0:04x}, control 0xCA 전송")
+        self._log(f"detect_packet 0: wIndex=0x{wIndex0:04x}, control 0xCA 전송")
         self._ctrl_write(0xCA, 0x0003, wIndex0 & 0xFFFF, None)
 
         capture_cmd = bytes([0xa8, 0x06, 0x00, 0x00]) + bytes(self.BULK_PACKET_SIZE - 4)
@@ -297,22 +297,22 @@ class Samsung730B:
 
         status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
         if status is None:
-            self._log("detect: 초기 상태 응답 bulk IN 타임아웃 (chunk 0)")
+            self._log("detect: 초기 상태 응답 bulk IN 타임아웃 (packet 0)")
         else:
             self._log(f"detect: 초기 상태 응답 수신: {len(status)} bytes")
             image_data.extend(status)
 
-        # ---------- chunk 1..N : 일부만 읽기 ----------
-        for i in range(1, max_chunks):
-            offset = i * self.CAPTURE_CHUNK_SIZE
+        # ---------- packet 1..N : 일부만 읽기 ----------
+        for i in range(1, max_packets):
+            offset = i * self.CAPTURE_PACKET_SIZE
             wIndex = self.CAPTURE_START_INDEX + offset
 
-            self._log(f"detect chunk {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
+            self._log(f"detect packet {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
             self._ctrl_write(0xCA, 0x0003, wIndex & 0xFFFF, None)
 
             data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=700)
             if not data:
-                self._log(f"detect중 타임아웃 또는 0bytes 수신, chunk={i}")
+                self._log(f"detect중 타임아웃 또는 0bytes 수신, packet={i}")
                 break
 
             image_data.extend(data)
@@ -323,7 +323,7 @@ class Samsung730B:
         self.state = SensorState.IDLE
         return bytes(image_data)
 
-    def _has_finger_in_detect(self, data: bytes) -> bool:
+    def _has_fingerprint_in_detect(self, data: bytes) -> bool:
         """ff 비율 기반"""
         if not data or len(data) < 512:
             self._log("detect: data too short for finger detect")
@@ -353,17 +353,16 @@ class Samsung730B:
     # ---------- 캡처 ----------
 
     def capture(self):
-        """지문 1프레임 캡처"""
         if self.state not in (SensorState.IDLE, SensorState.AWAIT_FINGER):
             raise Samsung730BError(f"캡처 가능 상태가 아님: {self.state}")
 
         self.state = SensorState.CAPTURING
         image_data = bytearray()
 
-        # ---------- 1) chunk 0 : 상태 응답만 처리 ----------
+        # ---------- 1) packet 0 : 상태 응답만 처리 ----------
         # wIndex = 0x032a (= CAPTURE_START_INDEX)
         wIndex0 = self.CAPTURE_START_INDEX
-        self._log(f"chunk 0: wIndex=0x{wIndex0:04x}, 상태 응답용 control 0xCA 전송")
+        self._log(f"packet 0: wIndex=0x{wIndex0:04x}, 상태 응답용 control 0xCA 전송")
         self._ctrl_write(0xCA, 0x0003, wIndex0 & 0xFFFF, None)
 
         # 캡처 시작 명령 (a8 06 00 00 ...)
@@ -376,23 +375,23 @@ class Samsung730B:
         # 첫 IN: 짧은 상태 응답만 읽고 버림 (보통 0~2 bytes 정도)
         status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
         if status is None:
-            self._log("초기 상태 응답 bulk IN 타임아웃 (chunk 0)")
+            self._log("초기 상태 응답 bulk IN 타임아웃 (packet 0)")
         else:
             self._log(f"초기 상태 응답 수신: {len(status)} bytes")
 
-        # ---------- 2) chunk 1..N : 실제 이미지 데이터 ----------
-        for i in range(1, self.CAPTURE_NUM_CHUNKS):
-            offset = i * self.CAPTURE_CHUNK_SIZE
+        # ---------- 2) packet 1..N : 실제 이미지 데이터 ----------
+        for i in range(1, self.CAPTURE_NUM_PACKETS):
+            offset = i * self.CAPTURE_PACKET_SIZE
             wIndex = self.CAPTURE_START_INDEX + offset
 
-            # CONTROL 0xCA: 프레임 청크 설정
-            self._log(f"chunk {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
+            # CONTROL 0xCA: 프레임 패킷 설정
+            self._log(f"packet {i}: wIndex=0x{wIndex:04x}, control 0xCA 전송")
             self._ctrl_write(0xCA, 0x0003, wIndex & 0xFFFF, None)
 
             # 데이터 읽기 (256 bytes 기대)
             data = self._bulk_in(self.BULK_PACKET_SIZE, timeout=1000)
             if not data:
-                self._log(f"캡처 중 타임아웃 또는 0 bytes 수신, chunk={i}")
+                self._log(f"캡처 중 타임아웃 또는 0 bytes 수신, packet={i}")
                 break
 
             image_data.extend(data)

@@ -19,7 +19,7 @@ libusb_device_handle* _libusb_initializing();
 static void init_sensor(libusb_device_handle*);
 static int capture_fingerprint(libusb_device_handle*, unsigned char**, int*);
 static int detect_finger(libusb_device_handle*, unsigned char**, int*, int);
-static int has_finger_in_detect(const unsigned char*, int);
+static int has_fingerprint_in_detect(const unsigned char*, int);
 static int wait_finger(libusb_device_handle*);
 static int save_pgm_from_raw(const unsigned char*, int, const char*, int);
 static void die(const char*, int);
@@ -48,7 +48,7 @@ static const uint16_t capture_indices[] = {
     0x532a, 0x542a, 0x552a, 0x562a,
     0x572a,
 };
-static const size_t CAPTURE_NUM_CHUNKS = sizeof(capture_indices) / sizeof(capture_indices[0]);
+static const size_t CAPTURE_NUM_PACKETS = sizeof(capture_indices) / sizeof(capture_indices[0]);
 
 struct cmd_def {
     const unsigned char *data;
@@ -258,17 +258,17 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
     int r;
     int transferred;
     int total_len = 0;
-    int capacity = (int)CAPTURE_NUM_CHUNKS * BULK_PACKET_SIZE + 1024;
+    int capacity = (int)CAPTURE_NUM_PACKETS * BULK_PACKET_SIZE + 1024;
     unsigned char *buf = malloc(capacity);
 
     if (!buf)
         die("malloc 실패", -1);
 
-    // ---------- 1) 첫 chunk: 상태응답 ----------
+    // ---------- 1) 첫 packet: 상태응답 ----------
     {
         uint16_t wIndex0 = capture_indices[0];
 
-        // CONTROL 0xCA (첫 chunk)
+        // CONTROL 0xCA (첫 packet)
         r = libusb_control_transfer(
             dev,
             0x40,
@@ -280,7 +280,7 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] control 0xCA 실패 chunk=0, err=%d\n", r);
+            fprintf(stderr, "[-] control 0xCA 실패 packet=0, err=%d\n", r);
             goto out_fail;
         }
 
@@ -301,7 +301,7 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] 캡처 시작 bulk 전송 실패 (chunk=0, err=%d)\n", r);
+            fprintf(stderr, "[-] 캡처 시작 bulk 전송 실패 (packet=0, err=%d)\n", r);
             goto out_fail;
         }
 
@@ -316,19 +316,19 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] 초기 상태 bulk IN 실패 chunk=0, err=%d\n", r);
+            fprintf(stderr, "[-] 초기 상태 bulk IN 실패 packet=0, err=%d\n", r);
             goto out_fail;
         }
     }
 
-    // ---------- 2) 나머지 chunk: 실제 데이터 + ACK ----------
-    for (size_t i = 1; i < CAPTURE_NUM_CHUNKS; i++) {
+    // ---------- 2) 나머지 packet: 실제 데이터 + ACK ----------
+    for (size_t i = 1; i < CAPTURE_NUM_PACKETS; i++) {
         uint16_t wIndex = capture_indices[i];
 
-        // CONTROL 0xCA: 청크 설정
+        // CONTROL 0xCA: 패킷 설정
         r = libusb_control_transfer(dev, 0x40, 0xCA, 0x0003, wIndex, NULL, 0, 500);
         if (r < 0) {
-            fprintf(stderr, "[-] control 0xCA 실패 chunk=%zu, err=%d\n", i, r);
+            fprintf(stderr, "[-] control 0xCA 실패 packet=%zu, err=%d\n", i, r);
             break;
         }
 
@@ -343,11 +343,11 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
         );
 
         if (r < 0) {
-            fprintf(stderr, "[-] bulk IN 실패 chunk=%zu, err=%d\n", i, r);
+            fprintf(stderr, "[-] bulk IN 실패 packet=%zu, err=%d\n", i, r);
             break;
         }
         if (transferred == 0) {
-            fprintf(stderr, "[*] chunk=%zu 에서 0 bytes 들어옴, 종료\n", i);
+            fprintf(stderr, "[*] packet=%zu 에서 0 bytes 들어옴, 종료\n", i);
             break;
         }
 
@@ -371,7 +371,7 @@ static int capture_fingerprint(libusb_device_handle *dev, unsigned char **out_bu
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] bulk ACK 실패 chunk=%zu, err=%d\n", i, r);
+            fprintf(stderr, "[-] bulk ACK 실패 packet=%zu, err=%d\n", i, r);
             break;
         }
     }
@@ -387,17 +387,17 @@ out_fail:
     return -1;
 }
 
-static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_chunks) {
+static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int *out_len, int max_packets) {
     int r;
     int transferred;
     int total_len = 0;
-    int capacity = max_chunks * BULK_PACKET_SIZE + 256;
+    int capacity = max_packets * BULK_PACKET_SIZE + 256;
     unsigned char *buf = malloc(capacity);
 
     if (!buf)
         die("detect malloc fail", -1);
 
-    // chunk 0: 상태 응답만
+    // packet 0: 상태 응답만
     {
         uint16_t wIndex0 = capture_indices[0];
 
@@ -412,7 +412,7 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=0, err=%d\n", r);
+            fprintf(stderr, "[-] detect: control 0xCA 실패 packet=0, err=%d\n", r);
             goto out_fail;
         }
 
@@ -445,7 +445,7 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] detect: 초기 상태 bulk IN 실패 chunk=0, err=%d\n", r);
+            fprintf(stderr, "[-] detect: 초기 상태 bulk IN 실패 packet=0, err=%d\n", r);
             goto out_fail;
         }
 
@@ -461,8 +461,8 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
         }
     }
 
-    // chunk 1: 일부 데이터만 읽고 ACK
-    for (int i = 1; i < max_chunks; i++) {
+    // packet 1: 일부 데이터만 읽고 ACK
+    for (int i = 1; i < max_packets; i++) {
         uint16_t wIndex = capture_indices[i];
 
         r = libusb_control_transfer(
@@ -476,7 +476,7 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] detect: control 0xCA 실패 chunk=%d, err=%d\n", i, r);
+            fprintf(stderr, "[-] detect: control 0xCA 실패 packet=%d, err=%d\n", i, r);
             break;
         }
 
@@ -490,11 +490,11 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
             700
         );
         if (r < 0) {
-            fprintf(stderr, "[-] detect: bulk IN 실패 chunk=%d, err=%d\n", i, r);
+            fprintf(stderr, "[-] detect: bulk IN 실패 packet=%d, err=%d\n", i, r);
             break;
         }
         if (transferred == 0) {
-            fprintf(stderr, "[*] detect: chunk=%d 에서 0 bytes, 종료\n", i);
+            fprintf(stderr, "[*] detect: packet=%d 에서 0 bytes, 종료\n", i);
             break;
         }
 
@@ -517,7 +517,7 @@ static int detect_finger(libusb_device_handle *dev, unsigned char **out_buf, int
             500
         );
         if (r < 0) {
-            fprintf(stderr, "[-] detect: bulk ACK 실패 chunk=%d, err=%d\n", i, r);
+            fprintf(stderr, "[-] detect: bulk ACK 실패 packet=%d, err=%d\n", i, r);
             break;
         }
     }
@@ -533,7 +533,7 @@ out_fail:
     return -1;
 }
 
-static int has_finger_in_detect(const unsigned char *data, int len) {
+static int has_fingerprint_in_detect(const unsigned char *data, int len) {
     if (!data || len < 512) {
         fprintf(stderr, "[detect] data too short for finger detect (len=%d)\n", len);
         return 0;
@@ -574,7 +574,7 @@ static int wait_finger(libusb_device_handle *dev) {
             int len = 0;
             int r = detect_finger(dev, &buf, &len, 6);
             if (r == 0 && buf) {
-                int finger = has_finger_in_detect(buf, len);
+                int finger = has_fingerprint_in_detect(buf, len);
                 free(buf);
                 init_sensor(dev);
                 if (finger) return 1;
