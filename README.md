@@ -1,18 +1,22 @@
-updated 25.12.12
+updated 26.01.14
 
 # samsung-730b-reverse
 
+> **English documentation:** [`English-protocol-samsung-730b.md`](./docs/English-protocol-samsung-730b.md)
+
 리눅스에서 Samsung 730B 지문인식을 위한 리버싱 노트, python/libusb 드라이버, libfprint 드라이버 작업용 저장소
 
-- libfprint 브랜치(WIP 드라이버):  
-  https://gitlab.freedesktop.org/lignah/libfprint/-/tree/feature/samsung730b?ref_type=heads
+*Reverse engineering notes, Python/libusb driver, and libfprint driver for Samsung 730B fingerprint sensor on Linux.*
+
+- libfprint 브랜치: https://gitlab.freedesktop.org/lignah/libfprint/-/tree/feature/samsung730b
+- **Merge Request:** https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/556
 
 ## 목적
 
 - 삼성 노트북에서 리눅스 사용 시 지문인식이 안 됨
 - Windows 드라이버 트래픽을 리버스해서
   - 파이썬/libusb 테스트 드라이버 작성
-  - libfprint 공식 드라이버로 기여하는 것이 최종 목표
+  - libfprint 공식 드라이버로 기여 ✅
 
 ## 파이썬 드라이버
 
@@ -81,38 +85,43 @@ sudo ./samsung_730b
 `gcc samsung_730b.c -o samsung_730b -lusb-1.0` 만 해도됨
 
 
-## libfprint 드라이버 작업 상태 (요약)
+## libfprint 드라이버 (완료)
 
-별도 레포/브랜치에서 작업 중:
+MR 제출됨: https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/556
 
-- [`samsung730b.c`](https://gitlab.freedesktop.org/lignah/libfprint/-/blob/feature/samsung730b/libfprint/drivers/samsung730b.c?ref_type=heads)
-- libfprint 브랜치: `feature/samsung730b`
-- MR: https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/556
+### 센서 스펙
 
-현재 구현:
+| 항목 | 값 |
+|------|-----|
+| VID/PID | 04e8:730b |
+| 타입 | USB image device (press) |
+| 이미지 크기 | 112×96 pixels |
+| 해상도 | ~500 DPI (19.69 px/mm) |
 
-- 새 드라이버 `samsung730b` 추가 (USB image device, press 타입)
-- init 시퀀스:
-  - control 0xC3 + Windows와 동일한 0xA9/0xA8 bulk OUT 시퀀스
-- 이미지 캡처:
-  - control 0xCA + 256B bulk IN/OUT, 85 패킷
-  - 파이썬 드라이버와 동일한 offset/해상도로 `FpImage` 구성
-- finger detect:
-  - 짧은 캡처(6 패킷) + ff 비율 기반 heuristic
-  - 여러 round/재초기화 루프
+### 구현 내용
 
-상태:
+- **Init 시퀀스:** control 0xC3 + 0xA9/0xA8 bulk OUT 시퀀스
+- **이미지 캡처:** control 0xCA + 256B bulk IN/OUT, 85 패킷
+- **Finger detect:** 짧은 캡처(6 패킷) + 0xFF 비율 기반 heuristic
 
-- fprintd에서 장치가 `Samsung 730B (experimental)`로 잘 잡힘
-- 손 올리면:
-  - detect → capture → minutiae 추출까지 동작 확인됨
-- fprintd-enroll 지문인식, 등록 확인
-- fprintd-verify score 0/20 문제 해결중
+### 이미지 전처리 파이프라인
+
+1. **CLAHE** (Contrast Limited Adaptive Histogram Equalization) - clip_limit=3.0
+2. **Contrast stretching** - 1st/99th percentile 기반
+3. **Unsharp mask** - amount=2.5로 edge 강화
+4. **2× upscaling** - NBIS minutiae 추출 정확도 향상 (224×192)
+
+### 테스트 결과
+
+| Metric | Result |
+|--------|--------|
+| True Accept Rate (TAR) | ~87% |
+| False Accept Rate (FAR) | ~0-20% |
+| bz3_threshold | 25 |
 
 
-## 참고
+## 참고 문서
 
-- 상세 프로토콜/드라이버 설계/pcap 분석/이미지 오프셋 찾은 과정 등:
-  - [`protocol-samsung-730b.md`](./docs/protocol-samsung-730b.md) 참고하면 됨
-  - Please refer to the English document [`English-protocol-samsung-730b.md`](./docs/English-protocol-samsung-730b.md)
-- libfprint 드라이버는 freedesktop upstream 리뷰를 받으면서 계속 업데이트할 예정
+- 상세 프로토콜/드라이버 설계/pcap 분석/이미지 오프셋 찾은 과정:
+  - 한국어: [`protocol-samsung-730b.md`](./docs/protocol-samsung-730b.md)
+  - English: [`English-protocol-samsung-730b.md`](./docs/English-protocol-samsung-730b.md)
