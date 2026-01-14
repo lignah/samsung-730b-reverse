@@ -1,4 +1,4 @@
-Last updated: 2025‑12‑12
+Last updated: 2026-01-14
 
 # Vendor protocol notes for Samsung 730B fingerprint sensor
 
@@ -368,16 +368,100 @@ In field tests :
 
 ## 9. Summary and future plans
 
-confirmed contents :
+Confirmed contents:
 
     Device: Samsung 730B (VID 0x04E8, PID 0x730B)
     Protocols: Control (0xC3/0xCA) and Bulk (0xA9/0xA8 Init, data chunk loop)
     Capture: Chunk 0 Special Processing + 84 Data Chunk
-    Image: Offset 180, 112x96, 8bpp Grayscale (Requires 90 degree rotation for viewing?)
+    Image: Offset 180, 112x96, 8bpp Grayscale
     Detection: Short capture (6 chunks) + 0xFF/0x00 ratio Heuristic
     - Complete creation of libfprint driver (samsung730b)
-    - Check Enroll Behavior
+    - Enroll/Verify functionality confirmed
 
-Next thing to do:
+# 10. Image Preprocessing Pipeline
 
-    [ ] fprintd-verify score 0/20 Cause Analysis/Resolution
+## 10.1 Problem
+
+The initial driver passed raw images (112x96) directly to NBIS, which caused the following issues:
+
+- **Low resolution**: 112x96 is too small for reliable NBIS minutiae extraction
+- **Low contrast**: Sensor output is generally hazy, making fingerprint ridges hard to distinguish
+- **score 0/20**: fprintd-verify returned matching scores of 0
+
+## 10.2 Solution: Image Preprocessing Pipeline
+
+Applied a 3-stage preprocessing pipeline to solve these issues:
+
+### 1) CLAHE (Contrast Limited Adaptive Histogram Equalization)
+
+- Adaptive histogram equalization based on 8x8 grid
+- clip_limit = 3.0 (contrast limiting parameter)
+- Improves local contrast to make fingerprint ridges clearer
+
+```c
+s730b_preproc_clahe (data, width, height, 3.0);
+```
+
+### 2) Contrast Stretching
+
+- Linear stretching based on 1st/99th percentile
+- Expands dynamic range to 0-255 while reducing outlier influence
+
+```c
+s730b_preproc_contrast_stretch (data, len);
+```
+
+### 3) Unsharp Mask (Edge Sharpening)
+
+- Unsharp masking using 3x3 box blur
+- amount = 2.5 (sharpening intensity)
+- Emphasizes fingerprint ridge edges to improve minutiae extraction
+
+```c
+s730b_preproc_unsharp_mask (data, width, height, 2.5);
+```
+
+## 10.3 Image Upscaling
+
+NBIS minutiae extraction is unreliable on small images. Solution:
+
+- **resize_factor = 2**: Upscale from 112x96 → 224x192 (2x)
+- **ppmm adjustment**: 19.69 → 39.38 (maintain physical unit consistency)
+- Uses libfprint's built-in `fpi_image_resize()` function
+
+```c
+#define S730B_RESIZE_FACTOR 2
+img = fpi_image_resize (tmp, resize_factor, resize_factor);
+img->ppmm = 19.69 * resize_factor;  /* 39.38 */
+```
+
+## 10.4 Bozorth3 Matching Threshold
+
+Using libfprint's NBIS bozorth3 algorithm:
+
+- **bz3_threshold = 25**: Scores of 25 or higher are considered a match
+- Set via `img_class->bz3_threshold = 25;`
+
+## 10.5 Final Results
+
+| Test | Result | Rate |
+|------|--------|------|
+| Enrolled finger (TAR) | 7/8 match | **87.5%** |
+| Other finger (FAR) | 0/5 match | **0%** |
+
+- Enrolled finger score range: 28~51
+- Other finger score range: 8~25
+- Good results for a 112x96 low-resolution sensor
+
+# 11. Final Driver Parameters Summary
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| IMG_W | 112 | Original image width |
+| IMG_H | 96 | Original image height |
+| IMG_OFFSET | 180 | Valid image start offset |
+| S730B_RESIZE_FACTOR | 2 | Upscale factor (224x192 output) |
+| CLAHE clip_limit | 3.0 | Contrast limiting parameter |
+| sharpen_amount | 2.5 | Unsharp mask intensity |
+| bz3_threshold | 25 | Bozorth3 matching threshold |
+| ppmm | 19.69 (base) | Pixels per mm at 500 DPI |

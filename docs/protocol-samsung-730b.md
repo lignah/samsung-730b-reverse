@@ -1,4 +1,4 @@
-최종 업데이트 날짜: 25.12.12
+최종 업데이트 날짜: 26.01.14
 
 # Samsung 730B 지문 센서 Vendor 프로토콜 정리
 
@@ -335,11 +335,95 @@ s730b_submit_image (FpImageDevice *dev, guint8 *raw, gsize raw_len)
     장치: Samsung 730B (VID 0x04E8, PID 0x730B)
     프로토콜: Control (0xC3/0xCA) 및 Bulk (0xA9/0xA8 Init, 데이터 청크 루프)
     캡처: Chunk 0 특수 처리 + 84 데이터 청크
-    이미지: Offset 180, 112x96, 8bpp Grayscale (보기용 90도 회전 필요?)
+    이미지: Offset 180, 112x96, 8bpp Grayscale
     감지: 짧은 캡처(6 청크) + 0xFF/0x00 비율 Heuristic
     - libfprint 드라이버(samsung730b) 작성 완료
-    - Enroll 동작 확인
+    - Enroll/Verify 동작 확인 완료
 
-다음으로 할 일 :
+# 10. 이미지 전처리 파이프라인
 
-    [ ] fprintd-verify score 0/20 원인 분석/해결
+## 10.1 문제점
+
+초기 드라이버는 raw 이미지(112x96)를 그대로 NBIS에 전달했으나 다음 문제가 있었음:
+
+- **낮은 해상도**: 112x96은 NBIS 특징점(minutiae) 추출에 너무 작음
+- **낮은 대비**: 센서 출력이 전체적으로 흐릿하여 지문 융선이 잘 구분되지 않음
+- **score 0/20**: fprintd-verify에서 매칭 점수가 0으로 나옴
+
+## 10.2 해결책: 이미지 전처리 파이프라인
+
+다음 3단계 전처리를 적용하여 문제 해결:
+
+### 1) CLAHE (Contrast Limited Adaptive Histogram Equalization)
+
+- 8x8 그리드 기반 적응형 히스토그램 평활화
+- clip_limit = 3.0 (contrast 제한 파라미터)
+- 지역적 대비를 향상시켜 지문 융선을 더 선명하게 함
+
+```c
+s730b_preproc_clahe (data, width, height, 3.0);
+```
+
+### 2) Contrast Stretching
+
+- 1st/99th percentile 기반 선형 스트레칭
+- 이상치 영향을 줄이면서 동적 범위를 0-255로 확장
+
+```c
+s730b_preproc_contrast_stretch (data, len);
+```
+
+### 3) Unsharp Mask (에지 샤프닝)
+
+- 3x3 box blur를 사용한 언샤프 마스킹
+- amount = 2.5 (샤프닝 강도)
+- 지문 융선의 에지를 강조하여 특징점 추출 개선
+
+```c
+s730b_preproc_unsharp_mask (data, width, height, 2.5);
+```
+
+## 10.3 이미지 업스케일링
+
+NBIS는 작은 이미지에서 특징점 추출이 불안정함. 해결책:
+
+- **resize_factor = 2**: 112x96 → 224x192로 2배 업스케일
+- **ppmm 조정**: 19.69 → 39.38 (물리적 단위 일관성 유지)
+- libfprint 내장 `fpi_image_resize()` 함수 사용
+
+```c
+#define S730B_RESIZE_FACTOR 2
+img = fpi_image_resize (tmp, resize_factor, resize_factor);
+img->ppmm = 19.69 * resize_factor;  /* 39.38 */
+```
+
+## 10.4 Bozorth3 매칭 임계값
+
+libfprint의 NBIS bozorth3 알고리즘 사용:
+
+- **bz3_threshold = 25**: 매칭 점수가 25 이상이면 match로 판정
+- `img_class->bz3_threshold = 25;`로 설정
+
+## 10.5 최종 결과
+
+| 테스트 | 결과 | 비율 |
+|--------|------|------|
+| 등록한 손가락 (TAR) | 7/8 match | **87.5%** |
+| 다른 손가락 (FAR) | 0/5 match | **0%** |
+
+- 등록한 손가락 점수 범위: 28~51
+- 다른 손가락 점수 범위: 8~25
+- 112x96 저해상도 센서 기준 양호한 결과
+
+# 11. 드라이버 최종 파라미터 요약
+
+| 파라미터 | 값 | 설명 |
+|----------|-----|------|
+| IMG_W | 112 | 원본 이미지 너비 |
+| IMG_H | 96 | 원본 이미지 높이 |
+| IMG_OFFSET | 180 | 유효 이미지 시작 오프셋 |
+| S730B_RESIZE_FACTOR | 2 | 업스케일 배율 (224x192 출력) |
+| CLAHE clip_limit | 3.0 | 대비 제한 파라미터 |
+| sharpen_amount | 2.5 | 언샤프 마스크 강도 |
+| bz3_threshold | 25 | Bozorth3 매칭 임계값 |
+| ppmm | 19.69 (base) | 500 DPI 기준 pixels per mm |
