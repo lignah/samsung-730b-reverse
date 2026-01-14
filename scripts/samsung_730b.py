@@ -6,7 +6,7 @@ Samsung 730B 지문인식 드라이버
 - 초기화/캡처 시퀀스는 Windows 트래픽 기반으로 재현했음
 - 지문 레이아웃:
   - 캡처 데이터 전체 길이 21506 bytes
-  - 유효 지문 영역: offset 182부터 112x96 (세로줄/가로줄 없는 오프셋과 해상도)
+  - 유효 지문 영역: offset 180부터 112x96 (세로줄/가로줄 없는 오프셋과 해상도)
   - 왼쪽으로 90도 회전해야 내가보는 방향과 맞음
 
 Copylight 2025 lignah
@@ -372,7 +372,7 @@ class Samsung730B:
         self._log("capture_cmd (a8 06 00 00 ...) 전송")
         self._bulk_out(capture_cmd)
 
-        # 첫 IN: 짧은 상태 응답만 읽고 버림 (보통 0~2 bytes 정도)
+        # 첫 IN: 짧은 상태 응답만 읽고 버림 (2 bytes)
         status = self._bulk_in(self.BULK_PACKET_SIZE, timeout=500)
         if status is None:
             self._log("초기 상태 응답 bulk IN 타임아웃 (packet 0)")
@@ -451,7 +451,7 @@ class Samsung730B:
 
 # ---------- s730b_test.c ----------
 
-def convert_raw_to_png(path, prefix="from_c", offset=182, width=112, height=96, rotate=True):
+def convert_raw_to_png(path, prefix="from_c", offset=180, width=112, height=96, rotate=True):
     from PIL import Image
     with open(path, "rb") as f:
         data = f.read()
