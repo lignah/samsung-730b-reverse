@@ -20,16 +20,26 @@ updated 26.08.01
 
 ## 샘플 이미지
 
-캡처/전처리 확인용 샘플 (`sample/`). 해상도 96×112 (90° 회전 후 표시 기준).
+캡처 확인용 (`sample/`). 원본 96×112 grayscale, README 표시용으로 3× 확대본은 `sample/readme/`.
 
-| none (무접촉) | half (부분 접촉) | default (정상 지문) |
-|:---:|:---:|:---:|
-| ![none](sample/none.png) | ![half](sample/half.png) | ![default](sample/default.png) |
+<p align="center">
+  <img src="sample/readme/none.png" width="140" alt="none — 손가락 없음"/>
+  &nbsp;&nbsp;
+  <img src="sample/readme/half.png" width="140" alt="half — 부분 접촉"/>
+  &nbsp;&nbsp;
+  <img src="sample/readme/default.png" width="140" alt="default — 정상 지문"/>
+</p>
 
-- `none` — 손가락 없음
-- `half` — 부분만 닿은 상태
-- `default` — 정상 캡처
-- raw/pgm: `sample/*.raw`, `sample/capture.pgm` 등
+<p align="center">
+  <b>none</b> (무접촉) &nbsp;&nbsp;&nbsp;&nbsp;
+  <b>half</b> (부분 접촉) &nbsp;&nbsp;&nbsp;&nbsp;
+  <b>default</b> (정상 캡처)
+</p>
+
+원본 파일:
+
+- [`sample/none.png`](sample/none.png) / [`half.png`](sample/half.png) / [`default.png`](sample/default.png)
+- raw/pgm: `sample/*.raw`, `sample/capture.pgm`
 
 ## 파이썬 드라이버
 
@@ -152,7 +162,7 @@ Marco Trevisan 리뷰: umockdev 테스트 요청 → 추가함.
 
 libfprint 쪽 변경 파일: `libfprint/drivers/samsung730b.c`
 
-### 매칭 측정 (실기기, 2026-08-01)
+### 매칭 측정 (2026-08-01)
 
 enroll 5 stages → genuine 10회 + impostor 5회  
 스크립트: [`scripts/match_eval.py`](scripts/match_eval.py)
@@ -167,7 +177,7 @@ enroll 5 stages → genuine 10회 + impostor 5회
 채택: thr=32, unsharp=1.5, CLAHE=3.0 + enroll/손뗌 타이밍.  
 본인 최저 ~39 / 타인 최고 ~29 / thr 32.
 
-초기 소표본(문서 §10): TAR ~87% (7/8), FAR 0/5, thr=25 — 참고.  
+초기 소표본(protocol 문서): TAR ~87% (7/8), FAR 0/5, thr=25 — 참고.  
 상세: [`docs/protocol-samsung-730b.md`](./docs/protocol-samsung-730b.md)
 
 ### umockdev 테스트
@@ -179,8 +189,6 @@ libfprint: `tests/samsung730b/{device,capture.pcapng,capture.png}`
 sudo ./tests/create-driver-test.py samsung730b
 meson test -C build samsung730b
 ```
-
-캡처 시퀀스나 전처리가 바뀌면 재캡처가 필요할 수 있음.
 
 ## 매칭 평가 스크립트
 
